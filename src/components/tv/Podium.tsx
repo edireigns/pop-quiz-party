@@ -9,6 +9,8 @@ export function Podium({ view }: { view: TvView }) {
   const heights = ["h-[18vh]", "h-[26vh]", "h-[13vh]"];
   const colors = ["border-cyan text-cyan", "border-yellow text-yellow", "border-pink text-pink"];
   const rest = f.standings.slice(3);
+  const tiedTop = f.standings.filter((x) => x.rank === 1);
+  const winner = f.winnerId ? f.standings.find((x) => x.id === f.winnerId) : tiedTop.length === 1 ? tiedTop[0] : null;
   return (
     <div className="relative grid h-[calc(100dvh-6rem)] grid-cols-[minmax(0,6fr)_minmax(0,5fr)] gap-[3vw] px-[3vw] pb-[2vw]">
       <div aria-hidden className="motion-safe-only pointer-events-none absolute inset-0 overflow-hidden">
@@ -27,7 +29,15 @@ export function Podium({ view }: { view: TvView }) {
       </div>
       <section className="flex flex-col justify-end" aria-label="Podium">
         <h2 className="font-display mb-auto pt-[1vw] text-center text-[3.6vw] font-black">
-          🏆 <span className="neon-text text-yellow">{top[0]?.nickname ?? "—"}</span> wins!
+          {winner ? (
+            <>
+              🏆 <span className="neon-text text-yellow">{winner.nickname}</span> wins!
+            </>
+          ) : tiedTop.length > 1 ? (
+            <>🤝 It&apos;s a tie at the top!</>
+          ) : (
+            <>🏁 Game over</>
+          )}
         </h2>
         <div className="flex items-end justify-center gap-[1.5vw]">
           {order.map((s, i) =>

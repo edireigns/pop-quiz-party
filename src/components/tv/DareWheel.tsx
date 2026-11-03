@@ -64,7 +64,8 @@ export function DareWheel({ view }: { view: TvView }) {
                   fill="#0b0620"
                   textAnchor="middle"
                   dominantBaseline="middle"
-                  transform={`rotate(${i * seg + seg / 2 - 90} ${tx} ${ty})`}
+                  // keep labels upright on the left half of the wheel
+                  transform={`rotate(${i * seg + seg / 2 - 90 + (i * seg + seg / 2 > 180 ? 180 : 0)} ${tx} ${ty})`}
                 >
                   {label}
                 </text>
