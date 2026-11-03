@@ -13,7 +13,7 @@ export function useHost(code: string) {
     setToken(resolveHostToken(code));
   }, [code]);
   const headers = token ? { "x-host-token": token } : null;
-  const room = useRoom<HostView>(code, "host", headers, { pollMs: 2000 });
+  const room = useRoom<HostView>(code, "host", headers, { pollMs: 2000, minGapMs: 900 });
   const [toast, setToast] = useState<{ msg: string; tone: "info" | "error" } | null>(null);
   useEffect(() => {
     if (!toast) return;

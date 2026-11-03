@@ -7,8 +7,11 @@ import { codeFrom, handle, json } from "@/lib/server/http";
 export async function GET(req: Request, ctx: RouteContext<"/api/rooms/[code]/state">) {
   return handle(async () => {
     const code = codeFrom((await ctx.params).code);
-    memoryLimit(`state:${clientIp(req)}`, 60, 5_000);
     const role = new URL(req.url).searchParams.get("role");
+    // Per-client key: a whole party usually shares one public IP.
+    const who = (req.headers.get("x-player-token") ?? req.headers.get("x-host-token") ?? role ?? "").slice(0, 16);
+    memoryLimit(`state:${clientIp(req)}:${who}`, 40, 5_000);
+    memoryLimit(`state-ip:${clientIp(req)}`, 600, 5_000);
     const { state, hostTokenHash, now } = await loadRoom(code);
     if (role === "host") {
       assertHost(req.headers.get("x-host-token"), hostTokenHash);

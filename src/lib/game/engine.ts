@@ -4,6 +4,8 @@
 import { WORD_BANK } from "@/data/words";
 import { startersFor } from "@/data/dares";
 import { isBlocked } from "@/lib/moderation";
+import { REACTION_EMOJIS } from "@/data/categories";
+export { REACTION_EMOJIS };
 import {
   applyDelta,
   DARE_AUTOSPIN_MS,
@@ -37,7 +39,6 @@ import {
 } from "./types";
 
 export const BUILTIN_CATEGORIES: BuiltInCategoryId[] = ["tv", "genz", "movies", "music", "memes", "food", "college", "mixed"];
-export const REACTION_EMOJIS = ["😂", "🔥", "😱", "👏", "💀", "🎉", "😭", "🤯"] as const;
 
 export const DEFAULT_SETTINGS: Settings = {
   rounds: 10,

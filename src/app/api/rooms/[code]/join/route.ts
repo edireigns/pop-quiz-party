@@ -15,7 +15,7 @@ export async function POST(req: Request, ctx: RouteContext<"/api/rooms/[code]/jo
   return handle(async () => {
     const code = codeFrom((await ctx.params).code);
     const ip = clientIp(req);
-    memoryLimit(`join:${ip}`, 20, 60_000);
+    memoryLimit(`join:${ip}`, 40, 60_000);
     const body = await readBody(req);
     const existing = req.headers.get("x-player-token");
     if (existing) {

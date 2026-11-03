@@ -1,7 +1,7 @@
 // Projections of the server-side GameState for each client role.
 // SECURITY: the answer (and hint) may only appear here once the round has
 // ended (round.endedAt != null). Unit tests enforce this.
-import { CATEGORY_EMOJI, CATEGORY_LABELS } from "@/data/words";
+import { CATEGORY_EMOJI, CATEGORY_LABELS } from "@/data/categories";
 import { computeAwards, standings, type Award, type Standing } from "./awards";
 import { knownLetters, remainingMs } from "./engine";
 import { STARTING_LIVES } from "./scoring";

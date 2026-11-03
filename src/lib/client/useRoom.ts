@@ -38,7 +38,7 @@ export function useRoom<V extends MinimalView>(
   code: string,
   role: "tv" | "host" | "player",
   headers: Record<string, string> | null,
-  opts: { pollMs?: number } = {},
+  opts: { pollMs?: number; minGapMs?: number } = {},
 ) {
   const [view, setView] = useState<V | null>(null);
   const [status, setStatus] = useState<RoomStatus>("loading");
@@ -49,6 +49,8 @@ export function useRoom<V extends MinimalView>(
   const again = useRef(false);
   const failures = useRef(0);
   const refreshRef = useRef<() => Promise<void>>(async () => {});
+  const lastFetch = useRef(0);
+  const pingTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const headersKey = headers ? JSON.stringify(headers) : null;
 
   const apply = useCallback((v: V, sentAt?: number) => {
@@ -69,6 +71,7 @@ export function useRoom<V extends MinimalView>(
     }
     const run = async () => {
       const sentAt = Date.now();
+      lastFetch.current = sentAt;
       try {
         const res = await fetch(`/api/rooms/${code}/state?role=${role}`, {
           headers: JSON.parse(headersKey),
@@ -138,20 +141,35 @@ export function useRoom<V extends MinimalView>(
     };
   }, [refresh, headersKey, opts.pollMs, role]);
 
-  // realtime pings
+  // realtime pings — throttled so a burst of guesses from 15 phones doesn't
+  // turn into hundreds of refetches (everyone at a party shares one IP).
   const channel = view?.channel;
+  const minGap = opts.minGapMs ?? 600;
   useEffect(() => {
     if (!channel) return;
-    return subscribeRoom(
+    const onPing = () => {
+      if (pingTimer.current) return;
+      const wait = Math.max(0, lastFetch.current + minGap - Date.now());
+      pingTimer.current = setTimeout(() => {
+        pingTimer.current = null;
+        void refreshRef.current();
+      }, wait);
+    };
+    const unsub = subscribeRoom(
       code,
       channel,
       (seq) => {
         const cur = viewRef.current;
-        if (!cur || seq !== cur.seq) void refresh();
+        if (!cur || seq !== cur.seq) onPing();
       },
-      (ok) => ok && void refresh(),
+      (ok) => ok && onPing(),
     );
-  }, [channel, code, refresh]);
+    return () => {
+      unsub();
+      if (pingTimer.current) clearTimeout(pingTimer.current);
+      pingTimer.current = null;
+    };
+  }, [channel, code, minGap]);
 
   // wake up exactly when a server deadline passes
   useEffect(() => {
@@ -196,12 +214,12 @@ export function useRoom<V extends MinimalView>(
   return { view, status, errorMessage, refresh, act, serverNow, setView: apply };
 }
 
-/** Re-render periodically; returns the current client time. */
-export function useTicker(intervalMs = 250) {
-  const [now, setNow] = useState(() => Date.now());
+/** Re-render periodically; returns the current time from `clock` (client time by default). */
+export function useTicker(intervalMs = 250, clock: () => number = Date.now) {
+  const [now, setNow] = useState(() => clock());
   useEffect(() => {
-    const t = setInterval(() => setNow(Date.now()), intervalMs);
+    const t = setInterval(() => setNow(clock()), intervalMs);
     return () => clearInterval(t);
-  }, [intervalMs]);
+  }, [intervalMs, clock]);
   return now;
 }

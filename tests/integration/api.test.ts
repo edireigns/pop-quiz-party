@@ -168,7 +168,7 @@ describe("rooms API", () => {
     const { code } = await newRoom();
     const fixedIp = { "x-forwarded-for": "203.0.113.9" };
     let limited = false;
-    for (let i = 0; i < 25; i++) {
+    for (let i = 0; i < 45; i++) {
       const r = await call(joinRoute as never, `/api/rooms/${code}/join`, {
         method: "POST",
         code,

@@ -3,6 +3,7 @@
 import { useParams } from "next/navigation";
 import { useState } from "react";
 import { TvScreen } from "@/components/tv/TvScreen";
+import { unlockAudio } from "@/components/tv/sound";
 import { Button, Logo, RoomGate, Stage } from "@/components/ui";
 import { useRoom } from "@/lib/client/useRoom";
 import type { TvView } from "@/lib/game/views";
@@ -10,7 +11,7 @@ import type { TvView } from "@/lib/game/views";
 export default function TvPage() {
   const params = useParams<{ code: string }>();
   const code = params.code.toUpperCase();
-  const room = useRoom<TvView>(code, "tv", {}, { pollMs: 2000 });
+  const room = useRoom<TvView>(code, "tv", {}, { pollMs: 2000, minGapMs: 300 });
   const [started, setStarted] = useState(false);
 
   if (!room.view || room.status === "notFound")
@@ -31,6 +32,7 @@ export default function TvPage() {
             className="min-h-24 px-14 text-4xl"
             autoFocus
             onClick={() => {
+              unlockAudio();
               setStarted(true);
               document.documentElement.requestFullscreen?.().catch(() => {});
             }}

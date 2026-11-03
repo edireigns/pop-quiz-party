@@ -7,7 +7,7 @@ import { QrCode } from "@/components/QrCode";
 import { Segmented, Toggle } from "@/components/Segmented";
 import { useHost } from "@/components/host/useHost";
 import { Button, ConnectionBanner, Logo, Panel, RoomGate, Stage, Toast } from "@/components/ui";
-import { CATEGORY_EMOJI, CATEGORY_LABELS } from "@/data/words";
+import { CATEGORY_EMOJI, CATEGORY_LABELS } from "@/data/categories";
 import { siteUrl } from "@/lib/client/storage";
 import type { CategoryId, Settings } from "@/lib/game/types";
 

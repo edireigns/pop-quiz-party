@@ -1,26 +1,558 @@
 "use client";
 
-import { ConnectionBanner, Logo, Panel, RoomGate, Stage } from "@/components/ui";
-import { useRoom } from "@/lib/client/useRoom";
+import { useCallback, useEffect, useRef, useState } from "react";
+import { Balloons } from "@/components/Balloons";
+import { Keyboard } from "@/components/game/Keyboard";
+import { Pattern } from "@/components/game/Pattern";
+import { Timer, useRemaining } from "@/components/game/Timer";
+import { Button, ConnectionBanner, Logo, Panel, RoomGate, Stage, Toast } from "@/components/ui";
+import { REACTION_EMOJIS } from "@/data/categories";
+import { useRoom, useTicker, type ApiError } from "@/lib/client/useRoom";
 import type { PlayerView } from "@/lib/game/views";
-import { useEffect } from "react";
+
+type Room = ReturnType<typeof useRoom<PlayerView>>;
 
 export function PlayerGame({ code, token, onLostSeat }: { code: string; token: string; onLostSeat: () => void }) {
-  const { view, status, errorMessage } = useRoom<PlayerView>(code, "player", { "x-player-token": token });
+  const room = useRoom<PlayerView>(code, "player", { "x-player-token": token }, { pollMs: 2500, minGapMs: 800 });
+  const { view, status, errorMessage } = room;
+  const [toast, setToast] = useState<{ msg: string; tone: "info" | "error" } | null>(null);
+
   useEffect(() => {
     if (status === "unauthorized") onLostSeat();
   }, [status, onLostSeat]);
-  if (!view || status === "notFound" || status === "removed") return <RoomGate status={status} errorMessage={errorMessage} hasView={!!view} role="player" />;
+  useEffect(() => {
+    if (!toast) return;
+    const t = setTimeout(() => setToast(null), 2600);
+    return () => clearTimeout(t);
+  }, [toast]);
+
+  const act = useCallback(
+    async (body: Record<string, unknown>) => {
+      try {
+        return await room.act<{ correct?: boolean | null }>("play", body);
+      } catch (e) {
+        const err = e as ApiError;
+        if (err.error !== "already_guessed") setToast({ msg: err.message, tone: "error" });
+        void room.refresh();
+        return null;
+      }
+    },
+    [room],
+  );
+
+  if (!view || status === "notFound" || status === "removed")
+    return <RoomGate status={status} errorMessage={errorMessage} hasView={!!view} role="player" />;
+
   return (
-    <Stage>
+    <Stage beams={false}>
       <ConnectionBanner status={status} />
-      <main className="mx-auto flex min-h-dvh max-w-md flex-col items-center justify-center gap-6 px-4 text-center">
-        <Logo size="sm" />
-        <Panel className="w-full">
-          <p className="font-display text-3xl font-black">You&apos;re in, {view.me.nickname}! 🎉</p>
-          <p className="mt-2 text-mute">Watch the TV — the host will start soon.</p>
-        </Panel>
+      <main className="mx-auto flex min-h-dvh max-w-md flex-col gap-3 px-3 pt-3 pb-6">
+        <TopBar view={view} />
+        <PhaseBody view={view} room={room} act={act} />
       </main>
+      <Toast message={toast?.msg ?? null} tone={toast?.tone} />
     </Stage>
+  );
+}
+
+function TopBar({ view }: { view: PlayerView }) {
+  return (
+    <header className="flex items-center justify-between gap-2">
+      <div className="min-w-0">
+        <div className="truncate font-bold">{view.me.nickname}</div>
+        <div className="text-sm text-mute">
+          {view.me.rank ? `#${view.me.rank} · ` : ""}
+          {view.phase !== "lobby" && view.round ? `Round ${view.round.number}/${view.totalRounds}` : `Room ${view.code}`}
+        </div>
+      </div>
+      <div className="text-right">
+        <div className="font-display text-2xl font-black text-cyan tabular-nums" aria-label={`Score ${view.me.score}`}>
+          {view.me.score}
+        </div>
+        <div className="text-xs text-mute">points</div>
+      </div>
+    </header>
+  );
+}
+
+function PhaseBody({ view, room, act }: { view: PlayerView; room: Room; act: (b: Record<string, unknown>) => Promise<unknown> }) {
+  switch (view.phase) {
+    case "lobby":
+      return <Lobby view={view} act={act} />;
+    case "round":
+      return <RoundScreen view={view} room={room} act={act} />;
+    case "reveal":
+      return <RevealScreen view={view} act={act} />;
+    case "loserPick":
+      return <LoserPickScreen view={view} room={room} act={act} />;
+    case "dare":
+      return <DareScreen view={view} act={act} />;
+    case "ended":
+      return <EndedScreen view={view} />;
+  }
+}
+
+// ---------------------------------------------------------------------------
+export function Reactions({ act }: { act: (b: Record<string, unknown>) => Promise<unknown> }) {
+  const [cool, setCool] = useState(false);
+  return (
+    <div className="flex flex-col gap-2">
+      <p className="text-center text-sm text-mute">Send a reaction to the TV</p>
+      <div className="grid grid-cols-4 gap-2" role="group" aria-label="Emoji reactions">
+        {REACTION_EMOJIS.map((e) => (
+          <button
+            key={e}
+            type="button"
+            disabled={cool}
+            aria-label={`Send ${e}`}
+            onClick={async () => {
+              setCool(true);
+              setTimeout(() => setCool(false), 700);
+              await act({ action: "react", emoji: e });
+            }}
+            className="min-h-14 rounded-2xl bg-panel-2 text-3xl transition active:scale-90 disabled:opacity-60"
+          >
+            {e}
+          </button>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function Lobby({ view, act }: { view: PlayerView; act: (b: Record<string, unknown>) => Promise<unknown> }) {
+  const [answer, setAnswer] = useState("");
+  const [hint, setHint] = useState("");
+  const sub = view.submission;
+  return (
+    <>
+      <Panel className="text-center">
+        <p className="font-display text-3xl font-black">You&apos;re in! 🎉</p>
+        <p className="mt-2 text-mute">Eyes on the TV — the host will start soon.</p>
+      </Panel>
+      {view.friendWords && (
+        <Panel className="flex flex-col gap-3">
+          <h2 className="font-display text-xl font-bold">🤝 Submit a word for the group</h2>
+          {sub?.status === "removed" ? (
+            <p className="text-mute">The host removed your word. No worries — you&apos;ll play every round.</p>
+          ) : (
+            <>
+              <p className="text-sm text-mute">
+                One word or phrase per player. If it&apos;s played, you sit out that round and earn +15 for every friend who
+                can&apos;t solve it. Nobody sees it unless it&apos;s played.
+              </p>
+              {sub && (
+                <p className="rounded-xl bg-stage px-3 py-2" role="status">
+                  Submitted: <strong>{sub.answer}</strong> {sub.hint && <span className="text-mute">({sub.hint})</span>}
+                </p>
+              )}
+              <form
+                className="flex flex-col gap-2"
+                onSubmit={async (e) => {
+                  e.preventDefault();
+                  if (await act({ action: "submitWord", answer, hint })) {
+                    setAnswer("");
+                    setHint("");
+                  }
+                }}
+              >
+                <label htmlFor="fw" className="text-sm font-bold">
+                  Word or phrase (2–40 letters)
+                </label>
+                <input id="fw" value={answer} maxLength={40} onChange={(e) => setAnswer(e.target.value)} className="min-h-12 rounded-xl border-2 border-line bg-stage px-3" />
+                <label htmlFor="fh" className="text-sm font-bold">
+                  Hint (optional)
+                </label>
+                <input id="fh" value={hint} maxLength={60} onChange={(e) => setHint(e.target.value)} className="min-h-12 rounded-xl border-2 border-line bg-stage px-3" />
+                <Button type="submit" variant="pink" disabled={answer.trim().length < 2}>
+                  {sub ? "Replace my word" : "Submit my word"}
+                </Button>
+              </form>
+            </>
+          )}
+        </Panel>
+      )}
+      <Panel>
+        <Reactions act={act} />
+      </Panel>
+    </>
+  );
+}
+
+// ---------------------------------------------------------------------------
+function RoundScreen({ view, room, act }: { view: PlayerView; room: Room; act: (b: Record<string, unknown>) => Promise<unknown> }) {
+  const my = view.my!;
+  const r = view.round!;
+  const header = (
+    <Panel className="flex flex-col gap-2 py-3">
+      <div className="flex items-center justify-between gap-2">
+        <span className="font-bold">
+          <span aria-hidden>{r.categoryEmoji}</span> {r.category}
+        </span>
+        {r.kind === "final" && <span className="rounded-full bg-yellow px-2 py-0.5 text-sm font-black text-stage">2× FINAL</span>}
+        {r.kind === "suddenDeath" && <span className="rounded-full bg-red px-2 py-0.5 text-sm font-black text-stage">SUDDEN DEATH</span>}
+      </div>
+      <Timer timer={r.timer} serverNow={room.serverNow} />
+    </Panel>
+  );
+
+  if (my.state === "playing") return <Playing view={view} room={room} act={act} header={header} />;
+
+  if (my.state === "solved")
+    return (
+      <>
+        {header}
+        <Celebrate />
+        <Panel className="text-center">
+          <p className="font-display text-4xl font-black text-lime">SOLVED! 🎉</p>
+          <p className="mt-2 text-xl">
+            You&apos;re <strong className="text-yellow">#{view.me.rank}</strong> with {view.me.score} points
+          </p>
+          <p className="mt-1 text-mute">+{my.points} this round. Keep it secret — wait for the others!</p>
+        </Panel>
+        <Panel>
+          <Reactions act={act} />
+        </Panel>
+      </>
+    );
+  if (my.state === "out") return <OutScreen view={view} header={header} act={act} />;
+  if (my.state === "sittingOut")
+    return (
+      <>
+        {header}
+        <Panel className="text-center">
+          <p className="text-7xl" aria-hidden>
+            🤫
+          </p>
+          <p className="font-display mt-2 text-3xl font-black">Your word is being played.</p>
+          <p className="mt-2 text-mute">Sit back, keep a straight face, and earn +15 for every friend it stumps.</p>
+        </Panel>
+        <Panel>
+          <Reactions act={act} />
+        </Panel>
+      </>
+    );
+  return (
+    <>
+      {header}
+      <Panel className="text-center">
+        <p className="text-6xl" aria-hidden>
+          👀
+        </p>
+        <p className="font-display mt-2 text-2xl font-black">{r.kind === "suddenDeath" ? "Sudden Death!" : "You're up next round"}</p>
+        <p className="mt-2 text-mute">
+          {r.kind === "suddenDeath" ? `Only ${view.suddenDeath?.names.join(" & ")} are playing. Watch the TV!` : "Watch the TV and cheer on your rivals."}
+        </p>
+      </Panel>
+      <Panel>
+        <Reactions act={act} />
+      </Panel>
+    </>
+  );
+}
+
+function Celebrate() {
+  const pieces = Array.from({ length: 28 }, (_, i) => i);
+  return (
+    <div aria-hidden className="motion-safe-only pointer-events-none fixed inset-0 z-40 overflow-hidden">
+      {pieces.map((i) => (
+        <span
+          key={i}
+          className="animate-confetti absolute top-0 block h-3 w-2 rounded-sm"
+          style={{
+            left: `${(i * 37) % 100}%`,
+            background: ["#ff4fb1", "#33e6ff", "#ffe14d", "#8dff6b", "#b18cff"][i % 5],
+            animationDelay: `${(i % 7) * 0.12}s`,
+          }}
+        />
+      ))}
+    </div>
+  );
+}
+
+function OutScreen({ view, header, act }: { view: PlayerView; header: React.ReactNode; act: (b: Record<string, unknown>) => Promise<unknown> }) {
+  const pg = view.content === "pg13";
+  return (
+    <>
+      {header}
+      <Panel className="flex flex-col items-center py-8 text-center">
+        <div className="animate-laugh text-[9rem] leading-none" role="img" aria-label="Laughing emoji">
+          😂
+        </div>
+        <p className="font-display neon-text mt-4 text-5xl font-black text-pink" role="status">
+          {pg ? "YOU SUCK 😂" : "YOU'RE OUT 😂"}
+        </p>
+        <p className="mt-3 text-mute">All your balloons popped. The answer is revealed when the round ends.</p>
+      </Panel>
+      <Panel>
+        <Reactions act={act} />
+      </Panel>
+    </>
+  );
+}
+
+function Playing({ view, room, act, header }: { view: PlayerView; room: Room; act: (b: Record<string, unknown>) => Promise<unknown>; header: React.ReactNode }) {
+  const my = view.my!;
+  const r = view.round!;
+  const now = useTicker(250, room.serverNow);
+  const frozenMs = Math.max(0, my.frozenUntil - now);
+  const remaining = useRemaining(r.timer, room.serverNow);
+  const [pending, setPending] = useState<string | null>(null);
+  const [shake, setShake] = useState(0);
+  const [freezePicker, setFreezePicker] = useState(false);
+  const busy = useRef(false);
+  const correct = my.guessed.filter((l) => !my.wrong.includes(l));
+  const disabled = view.paused || frozenMs > 0 || remaining <= 0;
+
+  const onGuess = useCallback(
+    async (l: string) => {
+      if (busy.current) return;
+      busy.current = true;
+      setPending(l);
+      const res = (await act({ action: "guess", letter: l })) as { correct?: boolean | null } | null;
+      if (res && res.correct === false) setShake((n) => n + 1);
+      setPending(null);
+      busy.current = false;
+    },
+    [act],
+  );
+
+  const sd = r.kind === "suddenDeath";
+  return (
+    <>
+      {header}
+      <Panel className="flex flex-col items-center gap-4 py-5">
+        <div key={shake} className={shake ? "animate-shake" : ""}>
+          <Pattern cells={my.pattern!} />
+        </div>
+        <Balloons lives={my.lives} max={sd ? 1 : 6} size={30} />
+        {my.hint ? (
+          <p className="rounded-xl bg-stage px-3 py-2 text-center" role="status">
+            💡 {my.hint}
+          </p>
+        ) : null}
+        <p className="sr-only" aria-live="polite">
+          {pending ? `Guessing ${pending}` : ""}
+        </p>
+      </Panel>
+
+      <div className="relative">
+        <Keyboard correct={correct} wrong={my.wrong} disabled={disabled || !!pending} onGuess={onGuess} />
+        {frozenMs > 0 && (
+          <div className="absolute inset-0 flex items-center justify-center rounded-2xl bg-cyan/85 text-center" role="alert">
+            <p className="font-display text-3xl font-black text-stage">❄️ FROZEN {Math.ceil(frozenMs / 1000)}s</p>
+          </div>
+        )}
+        {view.paused && (
+          <div className="absolute inset-0 flex items-center justify-center rounded-2xl bg-stage/90" role="status">
+            <p className="font-display text-3xl font-black">⏸ Paused</p>
+          </div>
+        )}
+      </div>
+
+      {!sd && (
+        <div className="grid grid-cols-2 gap-2">
+          <Button variant="yellow" disabled={!!my.hint || disabled} onClick={() => act({ action: "hint" })} aria-label="Reveal hint, costs 20 points">
+            💡 Hint <span className="text-sm">(−20)</span>
+          </Button>
+          <div className="flex items-center justify-center rounded-2xl bg-panel text-sm text-mute" aria-label={`${view.me.powerupsLeft} power-ups left this game`}>
+            ⚡ Power-ups left: <strong className="ml-1 text-ink">{view.me.powerupsLeft}</strong>
+          </div>
+          <Button
+            variant="primary"
+            disabled={disabled || view.me.powerupsLeft <= 0 || my.freezeTargets.length === 0}
+            onClick={() => setFreezePicker(true)}
+          >
+            ❄️ Freeze rival
+          </Button>
+          <Button variant="lime" disabled={disabled || view.me.powerupsLeft <= 0} onClick={() => act({ action: "powerup", type: "reveal" })}>
+            🔦 Reveal letter
+          </Button>
+          <Button variant="pink" className="col-span-2" disabled={disabled || view.me.powerupsLeft <= 0} onClick={() => act({ action: "powerup", type: "extraLife" })}>
+            🎈 Extra life
+          </Button>
+        </div>
+      )}
+
+      {freezePicker && (
+        <div className="fixed inset-0 z-40 flex items-end bg-stage/80" role="dialog" aria-modal="true" aria-labelledby="freeze-title">
+          <Panel className="mx-auto mb-4 flex w-[calc(100%-1.5rem)] max-w-md flex-col gap-2">
+            <h2 id="freeze-title" className="font-display text-xl font-bold">
+              Freeze whose keyboard for 5s?
+            </h2>
+            <div className="grid max-h-[50dvh] grid-cols-2 gap-2 overflow-y-auto">
+              {my.freezeTargets.map((t) => (
+                <Button
+                  key={t.id}
+                  variant="primary"
+                  onClick={async () => {
+                    setFreezePicker(false);
+                    await act({ action: "powerup", type: "freeze", targetId: t.id });
+                  }}
+                >
+                  {t.nickname}
+                </Button>
+              ))}
+            </div>
+            <Button variant="ghost" onClick={() => setFreezePicker(false)} autoFocus>
+              Cancel
+            </Button>
+          </Panel>
+        </div>
+      )}
+    </>
+  );
+}
+
+// ---------------------------------------------------------------------------
+function RevealScreen({ view, act }: { view: PlayerView; act: (b: Record<string, unknown>) => Promise<unknown> }) {
+  const rv = view.reveal!;
+  const my = view.my;
+  const sd = view.round?.kind === "suddenDeath";
+  const iWon = sd && rv.sdWinnerId === view.me.id;
+  return (
+    <>
+      <Panel className="flex flex-col items-center gap-3 text-center">
+        <p className="text-sm font-bold tracking-widest text-mute uppercase">{rv.skipped ? "Word skipped — no points" : "The answer was"}</p>
+        <p className="font-display text-3xl font-black break-words text-yellow">{rv.answer}</p>
+        {rv.isFriend && rv.authorName && (
+          <p className="text-mute">
+            🤝 Written by <strong className="text-ink">{rv.authorName}</strong>
+            {rv.authorBonus > 0 && ` (+${rv.authorBonus} for stumping ${rv.stumpedCount})`}
+          </p>
+        )}
+      </Panel>
+      <Panel className="text-center">
+        {sd ? (
+          <p className="font-display text-3xl font-black">{iWon ? "🏆 You won Sudden Death!" : rv.sdWinnerId ? "Sudden Death is over!" : "Nobody solved it — another word!"}</p>
+        ) : (
+          <>
+            <p className="font-display text-4xl font-black text-lime">
+              {my && my.points > 0 ? `+${my.points}` : my?.points ?? 0}
+            </p>
+            <p className="text-mute">points this round</p>
+            <p className="mt-2 text-xl">
+              You&apos;re <strong className="text-yellow">#{view.me.rank}</strong> overall
+            </p>
+          </>
+        )}
+        <p className="mt-2 text-sm text-mute">Waiting for the host to continue…</p>
+      </Panel>
+      <Panel>
+        <Reactions act={act} />
+      </Panel>
+    </>
+  );
+}
+
+function LoserPickScreen({ view, room, act }: { view: PlayerView; room: Room; act: (b: Record<string, unknown>) => Promise<unknown> }) {
+  const lp = view.loserPick!;
+  useTicker(250);
+  const secs = Math.max(0, Math.ceil((lp.deadline - room.serverNow()) / 1000));
+  if (lp.playerId !== view.me.id)
+    return (
+      <>
+        <Panel className="text-center">
+          <p className="text-6xl" aria-hidden>
+            🎯
+          </p>
+          <p className="font-display mt-2 text-2xl font-black">{lp.nickname} is picking the next category…</p>
+          <p className="text-mute">{secs}s left</p>
+        </Panel>
+        <Panel>
+          <Reactions act={act} />
+        </Panel>
+      </>
+    );
+  return (
+    <Panel className="flex flex-col gap-3">
+      <h2 className="font-display text-2xl font-black">🎯 Loser Picks! You choose the next category</h2>
+      <p className="text-mute" role="timer">
+        {secs}s left — otherwise it&apos;s random.
+      </p>
+      <div className="grid grid-cols-2 gap-2">
+        {lp.options.map((o) => (
+          <Button key={o.id} variant="ghost" className="min-h-16" onClick={() => act({ action: "pickCategory", category: o.id })}>
+            <span aria-hidden>{o.emoji}</span> {o.label}
+          </Button>
+        ))}
+      </div>
+    </Panel>
+  );
+}
+
+function DareScreen({ view, act }: { view: PlayerView; act: (b: Record<string, unknown>) => Promise<unknown> }) {
+  const d = view.dare!;
+  const mine = d.playerId === view.me.id;
+  const result = d.resultIndex != null ? d.options[d.resultIndex] : null;
+  return (
+    <>
+      <Panel className="flex flex-col items-center gap-3 text-center">
+        <p className="text-6xl" aria-hidden>
+          🎡
+        </p>
+        <h2 className="font-display text-2xl font-black">{mine ? "You're spinning the Dare Wheel!" : `${d.nickname} is on the Dare Wheel`}</h2>
+        {d.status === "waiting" && mine && (
+          <Button big variant="pink" onClick={() => act({ action: "spinDare" })}>
+            Spin it! 🎡
+          </Button>
+        )}
+        {d.status === "waiting" && !mine && <p className="text-mute">Waiting for the spin… watch the TV!</p>}
+        {d.status === "spun" && result && <p className="text-xl font-bold text-yellow">“{result}”</p>}
+        {d.status === "passed" && <p className="text-xl font-bold">Passed — no worries! 👋</p>}
+        {mine && d.status === "spun" && (
+          <Button variant="ghost" onClick={() => act({ action: "passDare" })}>
+            Pass on this dare
+          </Button>
+        )}
+        <p className="text-sm text-mute">Dares are always optional.</p>
+      </Panel>
+      {!mine && (
+        <Panel>
+          <Reactions act={act} />
+        </Panel>
+      )}
+    </>
+  );
+}
+
+function EndedScreen({ view }: { view: PlayerView }) {
+  const f = view.final!;
+  const me = f.standings.find((s) => s.id === view.me.id);
+  const myAwards = f.awards.filter((a) => a.playerId === view.me.id);
+  const won = f.winnerId === view.me.id || me?.rank === 1;
+  return (
+    <>
+      {won && <Celebrate />}
+      <Panel className="text-center">
+        <Logo size="sm" />
+        <p className="font-display mt-3 text-5xl font-black text-yellow">#{me?.rank ?? "—"}</p>
+        <p className="text-xl">{won ? "🏆 Champion of the night!" : `with ${view.me.score} points`}</p>
+      </Panel>
+      {myAwards.length > 0 && (
+        <Panel className="flex flex-col gap-2">
+          <h2 className="font-display text-xl font-bold">Your awards</h2>
+          {myAwards.map((a) => (
+            <p key={a.key}>
+              <span aria-hidden>{a.emoji}</span> <strong>{a.title}</strong> — {a.detail}
+            </p>
+          ))}
+        </Panel>
+      )}
+      <Panel>
+        <h2 className="font-display mb-2 text-xl font-bold">Final standings</h2>
+        <ol className="flex flex-col gap-1">
+          {f.standings.slice(0, 10).map((s) => (
+            <li key={s.id} className={`flex justify-between rounded-lg px-2 py-1 ${s.id === view.me.id ? "bg-panel-2" : ""}`}>
+              <span>
+                #{s.rank} {s.nickname}
+              </span>
+              <span className="font-bold text-cyan tabular-nums">{s.score}</span>
+            </li>
+          ))}
+        </ol>
+        <p className="mt-3 text-center text-sm text-mute">If the host taps Play Again, you&apos;ll go straight back to the lobby.</p>
+      </Panel>
+    </>
   );
 }
