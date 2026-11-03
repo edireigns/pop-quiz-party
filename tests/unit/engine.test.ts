@@ -12,8 +12,8 @@ import {
   skipWord,
   startGame,
   tick,
-  useHint,
-  usePowerup,
+  takeHint,
+  activatePowerup,
   passDare,
   respinDare,
   spinDare,
@@ -85,7 +85,7 @@ describe("round scoring", () => {
     startGame(h.s, h.ctx());
     forceWord(h.s, "Pizza", "Cheesy slice");
     const [a] = h.ids;
-    expect(useHint(h.s, a, h.ctx())).toBe("Cheesy slice");
+    expect(takeHint(h.s, a, h.ctx())).toBe("Cheesy slice");
     expect(h.s.players[0].score).toBe(0);
     expect(h.s.round!.progress[a].points).toBe(0);
     guess(h.s, a, "P", h.ctx());
@@ -93,7 +93,7 @@ describe("round scoring", () => {
     guess(h.s, a, "Z", h.ctx());
     expect(h.s.players[0].score).toBe(30);
     // second hint call is free
-    useHint(h.s, a, h.ctx());
+    takeHint(h.s, a, h.ctx());
     expect(h.s.players[0].score).toBe(30);
   });
 
@@ -102,7 +102,7 @@ describe("round scoring", () => {
     startGame(h.s, h.ctx());
     forceWord(h.s, "Pizza");
     h.s.players[0].score = 100;
-    useHint(h.s, h.ids[0], h.ctx());
+    takeHint(h.s, h.ids[0], h.ctx());
     expect(h.s.players[0].score).toBe(80);
   });
 
@@ -155,7 +155,7 @@ describe("pause and skip", () => {
     forceWord(h.s, "Ramen");
     h.s.players[0].score = 50;
     guess(h.s, h.ids[0], "R", h.ctx());
-    usePowerup(h.s, h.ids[0], "extraLife", null, h.ctx());
+    activatePowerup(h.s, h.ids[0], "extraLife", null, h.ctx());
     expect(h.s.players[0].score).toBe(60);
     expect(h.s.players[0].powerupsLeft).toBe(1);
     skipWord(h.s, h.ctx());
@@ -257,7 +257,7 @@ describe("Double-Points Final", () => {
     startGame(h.s, h.ctx());
     h.s.round!.multiplier = 2;
     h.s.players[0].score = 100;
-    useHint(h.s, h.ids[0], h.ctx());
+    takeHint(h.s, h.ids[0], h.ctx());
     expect(h.s.players[0].score).toBe(80);
   });
 });
@@ -298,7 +298,7 @@ describe("Sudden Death tie handling", () => {
     forceWord(h.s, "Bagel");
     guess(h.s, h.ids[0], "Z", h.ctx());
     expect(h.s.round!.progress[h.ids[0]].status).toBe("out");
-    expect(() => useHint(h.s, h.ids[1], h.ctx())).toThrow(/Sudden Death/);
+    expect(() => takeHint(h.s, h.ids[1], h.ctx())).toThrow(/Sudden Death/);
     for (const l of ["B", "A", "G", "E", "L"]) guess(h.s, h.ids[1], l, h.ctx());
     expect(h.s.phase).toBe("reveal");
     expect(h.s.winnerId).toBe(h.ids[1]);
@@ -384,10 +384,10 @@ describe("power-ups", () => {
     startGame(h.s, h.ctx());
     forceWord(h.s, "Pancakes");
     const [a, b] = h.ids;
-    usePowerup(h.s, a, "extraLife", null, h.ctx());
+    activatePowerup(h.s, a, "extraLife", null, h.ctx());
     expect(h.s.round!.progress[a].lives).toBe(7);
-    usePowerup(h.s, a, "freeze", b, h.ctx());
-    expect(() => usePowerup(h.s, a, "reveal", null, h.ctx())).toThrow(/both power-ups/);
+    activatePowerup(h.s, a, "freeze", b, h.ctx());
+    expect(() => activatePowerup(h.s, a, "reveal", null, h.ctx())).toThrow(/both power-ups/);
   });
 
   it("freeze blocks the target for 5 seconds, once per round", () => {
@@ -395,10 +395,10 @@ describe("power-ups", () => {
     startGame(h.s, h.ctx());
     forceWord(h.s, "Pancakes");
     const [a, b, c] = h.ids;
-    usePowerup(h.s, a, "freeze", b, h.ctx());
+    activatePowerup(h.s, a, "freeze", b, h.ctx());
     expect(() => guess(h.s, b, "P", h.ctx())).toThrow(/frozen/);
-    expect(() => usePowerup(h.s, c, "freeze", b, h.ctx())).toThrow(/already frozen/);
-    expect(() => usePowerup(h.s, a, "freeze", a, h.ctx())).toThrow();
+    expect(() => activatePowerup(h.s, c, "freeze", b, h.ctx())).toThrow(/already frozen/);
+    expect(() => activatePowerup(h.s, a, "freeze", a, h.ctx())).toThrow();
     h.advance(5_000);
     guess(h.s, b, "P", h.ctx());
     expect(h.s.round!.progress[b].guessed).toContain("P");
@@ -408,7 +408,7 @@ describe("power-ups", () => {
     const h = harness({ players: 2 });
     startGame(h.s, h.ctx());
     forceWord(h.s, "Kimchi");
-    usePowerup(h.s, h.ids[0], "reveal", null, h.ctx());
+    activatePowerup(h.s, h.ids[0], "reveal", null, h.ctx());
     const pr = h.s.round!.progress[h.ids[0]];
     expect(pr.revealed).toHaveLength(1);
     expect("KIMCH").toContain(pr.revealed[0]);
@@ -420,7 +420,7 @@ describe("power-ups", () => {
     startGame(h.s, h.ctx());
     forceWord(h.s, "Up");
     guess(h.s, h.ids[0], "U", h.ctx());
-    usePowerup(h.s, h.ids[0], "reveal", null, h.ctx());
+    activatePowerup(h.s, h.ids[0], "reveal", null, h.ctx());
     expect(h.s.round!.progress[h.ids[0]].status).toBe("solved");
     expect(h.s.players[0].score).toBe(10 + 50 + 60 + 30);
   });

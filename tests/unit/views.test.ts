@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { guess, next, startGame, submitWord, tick, useHint, usePowerup } from "@/lib/game/engine";
+import { guess, next, startGame, submitWord, tick, takeHint, activatePowerup } from "@/lib/game/engine";
 import { hostView, playerView, tvView } from "@/lib/game/views";
 import { forceWord, harness, WRONG_FOR } from "./helpers";
 
@@ -65,7 +65,7 @@ describe("answer protection", () => {
     const h = harness({ players: 2 });
     startGame(h.s, h.ctx());
     forceWord(h.s, SECRET, HINT);
-    useHint(h.s, h.ids[0], h.ctx());
+    takeHint(h.s, h.ids[0], h.ctx());
     expect(JSON.stringify(playerView(h.s, h.ids[0], h.now))).toContain(HINT);
     expect(JSON.stringify(playerView(h.s, h.ids[1], h.now))).not.toContain(HINT);
     expect(JSON.stringify(tvView(h.s, h.now))).not.toContain(HINT);
@@ -119,7 +119,7 @@ describe("answer protection", () => {
     const h = harness({ players: 2 });
     startGame(h.s, h.ctx());
     forceWord(h.s, "Mississippi", HINT);
-    usePowerup(h.s, h.ids[0], "reveal", null, h.ctx());
+    activatePowerup(h.s, h.ids[0], "reveal", null, h.ctx());
     const other = playerView(h.s, h.ids[1], h.now).my!;
     expect(other.pattern!.every((c) => c.t !== "letter" || c.c === null)).toBe(true);
   });

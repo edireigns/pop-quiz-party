@@ -69,6 +69,7 @@ export interface FinalView {
 }
 
 interface BaseView {
+  channel: string;
   serverNow: number;
   seq: number;
   code: string;
@@ -122,6 +123,7 @@ function base(s: GameState, now: number): BaseView {
     return { ...e, roundPoints };
   });
   return {
+    channel: `room-${s.roomId}`,
     serverNow: now,
     seq: s.seq,
     code: s.code,

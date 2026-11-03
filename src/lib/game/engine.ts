@@ -3,6 +3,7 @@
 // whole game can be unit-tested and replayed.
 import { WORD_BANK } from "@/data/words";
 import { startersFor } from "@/data/dares";
+import { isBlocked } from "@/lib/moderation";
 import {
   applyDelta,
   DARE_AUTOSPIN_MS,
@@ -300,7 +301,7 @@ function builtinPool(s: GameState, cat: BuiltInCategoryId, strictDifficulty: boo
 
 function insidePool(s: GameState) {
   const used = new Set(s.usedKeys);
-  return s.insideJokes.filter((j) => !used.has(wordKey(j.answer)));
+  return s.insideJokes.filter((j) => !used.has(wordKey(j.answer)) && !isBlocked(j.answer, s.settings.content));
 }
 
 /** Categories that still have unused words available. */
@@ -562,7 +563,7 @@ export function guess(s: GameState, playerId: string, rawLetter: unknown, ctx: C
   return { correct: letters.has(letter) };
 }
 
-export function useHint(s: GameState, playerId: string, ctx: Ctx) {
+export function takeHint(s: GameState, playerId: string, ctx: Ctx) {
   const { r, pr } = currentProgress(s, playerId);
   if (r.kind === "suddenDeath") throw new GameError("no_hints", "No hints in Sudden Death!", 409);
   if (pr.hintUsed) return r.hint;
@@ -573,7 +574,7 @@ export function useHint(s: GameState, playerId: string, ctx: Ctx) {
   return r.hint;
 }
 
-export function usePowerup(s: GameState, playerId: string, type: PowerUp, targetId: string | null, ctx: Ctx) {
+export function activatePowerup(s: GameState, playerId: string, type: PowerUp, targetId: string | null, ctx: Ctx) {
   const { r, pr } = currentProgress(s, playerId);
   if (r.kind === "suddenDeath") throw new GameError("no_powerups", "No power-ups in Sudden Death!", 409);
   if (pr.frozenUntil > ctx.now) throw new GameError("frozen", "You're frozen! ❄️", 409);
@@ -821,7 +822,8 @@ function startDare(s: GameState, ctx: Ctx) {
   const active = activePlayers(s);
   const low = Math.min(...active.map((p) => p.score));
   const target = pick(active.filter((p) => p.score === low), ctx.random);
-  const all = [...startersFor(s.settings.content), ...s.customDares.map((d) => d.text)];
+  const custom = s.customDares.map((d) => d.text).filter((t) => !isBlocked(t, s.settings.content));
+  const all = [...startersFor(s.settings.content), ...custom];
   const fresh = all.filter((d) => !s.usedDares.includes(d));
   const pool = fresh.length >= 4 ? fresh : all;
   const options = shuffle(pool, ctx.random).slice(0, 8);
