@@ -8,6 +8,10 @@ import { codeFrom, handle } from "@/lib/server/http";
  * sequence numbers — never game data.
  */
 export async function GET(req: Request, ctx: RouteContext<"/api/rooms/[code]/events">) {
+  // On serverless hosts (Vercel) an open stream would hold a function for minutes
+  // and can't see other instances anyway. 204 tells EventSource to stop; clients
+  // keep working through polling. Configure Supabase Realtime for instant updates.
+  if (process.env.VERCEL) return new Response(null, { status: 204 });
   return handle(async () => {
     const code = codeFrom((await ctx.params).code);
     const { state } = await loadRoom(code);

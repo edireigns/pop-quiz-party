@@ -9,10 +9,11 @@
     "lint": "eslint",
     "test": "vitest run",
     "typecheck": "next typegen && tsc --noEmit",
-    "db:migrate": "tsx --env-file-if-exists=.env.local scripts/migrate.ts",
+    "db:migrate": "tsx scripts/migrate.ts",
     "test:e2e": "playwright test",
-    "load-test": "tsx --env-file-if-exists=.env.local scripts/load-test.ts",
-    "check": "npm run lint && npm run typecheck && npm test && npm run build"
+    "load-test": "tsx scripts/load-test.ts",
+    "check": "npm run lint && npm run typecheck && npm test && npm run build",
+    "dev:lan": "next dev -H 0.0.0.0"
   },
   "dependencies": {
     "@supabase/supabase-js": "^2.118.0",

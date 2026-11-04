@@ -1,6 +1,7 @@
 import "server-only";
 import { GameError } from "@/lib/game/types";
 import { normalizeCode } from "./auth";
+import { classifySetupError } from "./setupErrors";
 
 export function json(data: unknown, status = 200) {
   return Response.json(data, {
@@ -11,6 +12,11 @@ export function json(data: unknown, status = 200) {
 
 export function errorResponse(e: unknown) {
   if (e instanceof GameError) return json({ error: e.code, message: e.message }, e.status);
+  const setup = classifySetupError(e);
+  if (setup) {
+    console.error(`[setup] ${setup.code}: ${setup.message}\n  cause:`, e instanceof Error ? e.message : e);
+    return json({ error: setup.code, message: setup.message, help: "/api/health" }, setup.status);
+  }
   console.error(e);
   return json({ error: "server_error", message: "Something went wrong. Please try again." }, 500);
 }

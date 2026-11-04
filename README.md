@@ -20,6 +20,8 @@ Built with **Next.js 16 (App Router) · TypeScript · Tailwind CSS 4 · Supabase
 9. [Testing](#testing)
 10. [Final checklist](#final-checklist)
 
+Having trouble? Jump to [Troubleshooting](#troubleshooting) or open `/api/health` on your running site.
+
 ---
 
 ## What's in the box
@@ -38,18 +40,68 @@ Game-night features: Power-ups (Freeze a rival / Reveal a letter / Extra Life, 2
 
 ## Quick start (local)
 
-Requirements: **Node 20+** and a Postgres database (a local Postgres 14+ or a Supabase project).
+You need **Node 20.9+** and **a Postgres database**. The game can't host a room without one.
+
+**1. Install and create your env file**
 
 ```bash
 npm install
-cp .env.example .env.local      # then edit DATABASE_URL if needed
-npm run db:migrate              # creates tables, RLS, rate-limit + cleanup functions
-npm run dev                     # http://localhost:3000
+cp .env.example .env.local
 ```
 
-Without Supabase keys the app falls back to a built-in **Server-Sent Events** channel for live updates. That works for local development with a single server process. Production on Vercel needs Supabase Realtime (below).
+On Windows PowerShell, use `copy .env.example .env.local` instead of `cp`.
 
-To try it alone: open `/` in one window and click **Host a new game**. Open the TV link in a second window, then the join link in two or three private windows (one per "phone").
+**2. Get a database.** Pick **one** option and put its connection string in `DATABASE_URL` in `.env.local`:
+
+| Option | What to do | `DATABASE_URL` |
+| --- | --- | --- |
+| **A. Use your Supabase project** (nothing to install) | Supabase → **Connect** → *Transaction pooler* | `postgresql://postgres.<ref>:<password>@aws-0-<region>.pooler.supabase.com:6543/postgres` |
+| **B. Docker** | `docker run -d --name pqp-db -e POSTGRES_PASSWORD=postgres -e POSTGRES_DB=popquiz -p 5432:5432 postgres:16` | `postgres://postgres:postgres@localhost:5432/popquiz` (the default) |
+| **C. Postgres installed locally** | Start it, then `createdb popquiz` | `postgres://<user>:<password>@localhost:5432/popquiz` |
+
+Connections to remote hosts like Supabase are encrypted automatically.
+
+**3. Create the tables, then start the app**
+
+```bash
+npm run db:migrate
+```
+
+```bash
+npm run dev
+```
+
+Open http://localhost:3000 and click **Host a new game**. If something isn't set up, the page tells you what's wrong. You can also open **http://localhost:3000/api/health** for a full setup check.
+
+To try it alone, open the TV link in a second window and the join link in two or three private windows (one per "phone").
+
+**Playing locally with real phones (same Wi-Fi)**
+
+```bash
+npm run dev:lan
+```
+
+Then open the TV page on the laptop **using the laptop's network address**, not `localhost`. Next.js prints it as `Network:`, for example `http://192.168.1.20:3000/tv/ABCDE`. The QR code will use that address so phones can reach it.
+
+- Phones can't open `localhost`. If `NEXT_PUBLIC_SITE_URL` is `localhost`, the QR code automatically uses the address you opened the TV page from.
+- If phones still can't connect, allow Node.js through your computer's firewall, and make sure the laptop and the phones are on the same Wi-Fi network (not a guest network).
+
+Without Supabase keys, live updates locally use a built-in Server-Sent Events channel. On Vercel, set up Supabase Realtime (below) for instant updates. Without it, the game still works but refreshes every 2–3 seconds.
+
+### Troubleshooting
+
+Open **`/api/health`**, locally or on your deployed site. It checks every setting and says what's wrong, without showing any secret values.
+
+| You see | Fix |
+| --- | --- |
+| "DATABASE_URL isn't set" | Create `.env.local` from `.env.example` and restart `npm run dev`. On Vercel, add the variable and **redeploy**. |
+| "Can't reach the database" | Postgres isn't running, or the host/port is wrong. On Supabase, use the **Transaction pooler** string (port 6543), not `db.<ref>.supabase.co`. |
+| "rejected the password" | Copy the connection string again. Passwords containing `@ : / #` must be URL-encoded. |
+| "database … doesn't exist" | `createdb popquiz`, or fix the name at the end of `DATABASE_URL`. |
+| "tables aren't set up yet" | `npm run db:migrate`, or paste `supabase/migrations/0001_init.sql` into the Supabase SQL Editor. |
+| Phones stuck on "Loading…" locally | Use `npm run dev:lan` and open the TV page through the network address (see above). |
+| QR code opens `localhost` on the live site | Set `NEXT_PUBLIC_SITE_URL` in Vercel and **redeploy**. |
+| "Too many requests" | You created a lot of rooms quickly. Wait a few minutes. |
 
 ### Environment variables
 
@@ -242,6 +294,8 @@ npm run check   # lint + typecheck + tests + production build
 ```
 
 CI ([`.github/workflows/ci.yml`](.github/workflows/ci.yml)) runs all of the above except the load test, against a Postgres service.
+
+Scripts such as `db:migrate` and `load-test` read `.env.local` themselves, and variables already set in your shell take priority.
 
 ---
 

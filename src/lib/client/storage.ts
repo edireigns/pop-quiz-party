@@ -48,8 +48,14 @@ export function resolveHostToken(code: string): string | null {
   return getHostToken(code);
 }
 
+/**
+ * Public base URL for QR codes and join links. Uses NEXT_PUBLIC_SITE_URL, except
+ * when that points at localhost — phones can't reach "localhost", so we use the
+ * address this page was actually opened from (e.g. http://192.168.1.20:3000).
+ */
 export function siteUrl(): string {
-  const env = process.env.NEXT_PUBLIC_SITE_URL;
-  if (env) return env.replace(/\/$/, "");
-  return typeof window !== "undefined" ? window.location.origin : "";
+  const env = (process.env.NEXT_PUBLIC_SITE_URL ?? "").replace(/\/$/, "");
+  const here = typeof window !== "undefined" ? window.location.origin : "";
+  if (env && !/^https?:\/\/(localhost|127\.0\.0\.1)(:|$)/.test(env)) return env;
+  return here || env;
 }

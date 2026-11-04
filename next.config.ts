@@ -9,6 +9,9 @@ const securityHeaders = [
 
 const nextConfig: NextConfig = {
   poweredByHeader: false,
+  // Dev only: let phones on your home Wi-Fi load the dev server (`npm run dev:lan`).
+  // Without this, pages opened from a LAN address stay stuck on "Loading…".
+  allowedDevOrigins: ["192.168.*.*", "10.*.*.*", "172.*.*.*", "*.local"],
   turbopack: {
     rules: {
       "*.css": {

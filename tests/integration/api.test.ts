@@ -180,3 +180,14 @@ describe("rooms API", () => {
     expect(limited).toBe(true);
   });
 });
+
+describe("setup check", () => {
+  it("/api/health reports a working database without leaking secrets", async () => {
+    const { GET } = await import("@/app/api/health/route");
+    const res = await GET(new Request("http://test/api/health", { headers: { "x-forwarded-for": "10.99.0.1" } }));
+    const body = await res.json();
+    expect(body.checks.databaseConnection.ok).toBe(true);
+    expect(body.checks.migration.ok).toBe(true);
+    expect(JSON.stringify(body)).not.toContain("postgres:postgres@");
+  });
+});

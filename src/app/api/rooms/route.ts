@@ -7,7 +7,7 @@ export async function POST(req: Request) {
   return handle(async () => {
     const ip = clientIp(req);
     memoryLimit(`create:${ip}`, 5, 60_000);
-    await dbLimit(`create:${ip}`, 20, 3600);
+    await dbLimit(`create:${ip}`, 60, 3600);
     const room = await createRoom();
     // Opportunistic cleanup in case the cron job isn't configured.
     if (Math.random() < 0.1) void cleanupExpired().catch(() => {});

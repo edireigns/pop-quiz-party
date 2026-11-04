@@ -226,7 +226,12 @@ test("full game: host, TV and 3 players with built-in words only", async ({ brow
   const scripts = await tv.$$eval("script[src]", (els) => els.map((e) => (e as HTMLScriptElement).src));
   let js = "";
   for (const src of scripts) js += await (await tv.request.get(src)).text();
-  for (const sample of ["Spaghetti Carbonara", "Distracted Boyfriend", "Breaking Bad", ...answers]) expect(js).not.toContain(sample);
+  expect(js, "sanity: the TV's own code was downloaded").toContain("End-of-Night Awards");
+  // A leaked word list would contain answers as string literals, e.g. "Pho". Match the
+  // quoted form so short answers don't false-positive on code like "Phone".
+  for (const sample of ["Spaghetti Carbonara", "Distracted Boyfriend", "Breaking Bad", ...answers]) {
+    for (const q of [`"${sample}"`, `'${sample}'`, `\`${sample}\``]) expect(js, `bundle contains ${q}`).not.toContain(q);
+  }
 
   // ---------------- Play Again ----------------
   await host.getByRole("button", { name: /Play Again/ }).click();

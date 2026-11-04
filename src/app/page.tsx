@@ -11,13 +11,20 @@ export default function Home() {
   const router = useRouter();
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [setupProblem, setSetupProblem] = useState<string | null>(null);
 
   async function createGame() {
     setBusy(true);
     setError(null);
+    setSetupProblem(null);
     try {
       const res = await fetch("/api/rooms", { method: "POST" });
-      const data = await res.json();
+      const data = await res.json().catch(() => ({}));
+      if (typeof data.error === "string" && data.error.startsWith("setup_")) {
+        setSetupProblem(data.message);
+        setBusy(false);
+        return;
+      }
       if (!res.ok) throw new Error(data.message ?? "Couldn't create a game.");
       setHostToken(data.code, data.hostToken);
       router.push(`/host/${data.code}/prep#k=${data.hostToken}`);
@@ -53,6 +60,19 @@ export default function Home() {
             📱 Join with a code
           </Link>
         </Panel>
+        {setupProblem && (
+          <section role="alert" className="w-full rounded-3xl border-2 border-orange bg-panel p-4 text-left">
+            <h2 className="font-display text-xl font-black text-orange">🔧 Almost there — the server needs setup</h2>
+            <p className="mt-2 text-ink">{setupProblem}</p>
+            <p className="mt-3 text-sm text-mute">
+              Open the{" "}
+              <a href="/api/health" target="_blank" rel="noreferrer" className="font-bold text-cyan underline underline-offset-4">
+                setup check
+              </a>{" "}
+              to see exactly what&apos;s missing. Details are in the README under &ldquo;Quick start&rdquo;.
+            </p>
+          </section>
+        )}
         <ul className="grid w-full grid-cols-1 gap-2 text-left text-mute sm:grid-cols-3">
           <li>📺 TV shows the QR code &amp; live leaderboard</li>
           <li>📱 Phones are the controllers</li>

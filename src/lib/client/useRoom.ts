@@ -189,11 +189,18 @@ export function useRoom<V extends MinimalView>(
   const act = useCallback(
     async <R = unknown>(path: "host" | "play" | "join", body: Record<string, unknown>, extraHeaders?: Record<string, string>): Promise<R> => {
       const sentAt = Date.now();
-      const res = await fetch(`/api/rooms/${code}/${path}`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json", ...(headersKey ? JSON.parse(headersKey) : {}), ...extraHeaders },
-        body: JSON.stringify(body),
-      });
+      let res: Response;
+      try {
+        res = await fetch(`/api/rooms/${code}/${path}`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json", ...(headersKey ? JSON.parse(headersKey) : {}), ...extraHeaders },
+          body: JSON.stringify(body),
+        });
+      } catch {
+        // Offline / Wi-Fi blip: show a friendly message and let polling reconnect.
+        setStatus("reconnecting");
+        throw { error: "offline", message: "Connection lost — reconnecting. Try again in a moment.", status: 0 } as ApiError;
+      }
       const data = await res.json().catch(() => ({}));
       if (!res.ok) {
         if (data.error === "removed") setStatus("removed");

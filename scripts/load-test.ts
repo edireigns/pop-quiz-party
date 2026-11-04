@@ -10,6 +10,9 @@
  * the TV and the host view, and that games never see each other's players.
  */
 import postgres from "postgres";
+import { loadEnv } from "./env";
+
+loadEnv();
 
 const BASE = (process.env.BASE_URL ?? "http://localhost:3000").replace(/\/$/, "");
 const GAMES = Number(process.env.GAMES ?? 2);
