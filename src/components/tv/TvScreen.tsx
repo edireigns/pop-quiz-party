@@ -11,6 +11,7 @@ import { useTicker, type useRoom } from "@/lib/client/useRoom";
 import type { TvView } from "@/lib/game/views";
 import { DareWheel } from "./DareWheel";
 import { MltQuestion, MltReveal } from "./MltStage";
+import { WwiTv } from "./WwiStage";
 import { Podium } from "./Podium";
 import { FloatingReactions } from "./FloatingReactions";
 import { useTvSound, MuteButton } from "./sound";
@@ -67,8 +68,14 @@ export function TvLobby({ view }: { view: TvView }) {
         {(view.mode === "mlt" || (view.mode === "mixed" && view.mixedModes.includes("mlt"))) && players.length < 3 && (
           <p className="text-[1.5vw] text-orange">👑 Most Likely To needs at least 3 players.</p>
         )}
+        {(view.mode === "wwi" || (view.mode === "mixed" && view.mixedModes.includes("wwi"))) && players.length < 4 && (
+          <p className="text-[1.5vw] text-orange">🕵️ Who Wrote It? needs at least 4 players.</p>
+        )}
         {view.lobby?.friendWords && (
-          <p className="text-[1.5vw] text-mute">🤝 Friend-written words are ON — submit yours on your phone! ({view.lobby.submissions} in)</p>
+          <p className="text-[1.5vw] text-mute">
+            🤝 Friend-written rounds are ON — submit yours on your phone! (
+            {view.lobby.submissions + view.lobby.questions + (view.lobby.prompts ?? 0)} in)
+          </p>
         )}
         <ul className="flex min-h-0 flex-1 flex-wrap content-start gap-[0.8vw] overflow-hidden" aria-live="polite">
           {players.map((p, i) => (
@@ -83,7 +90,7 @@ export function TvLobby({ view }: { view: TvView }) {
           {players.length === 0 && <li className="text-[1.8vw] text-mute">Waiting for players…</li>}
         </ul>
         <p className="text-[1.5vw] text-mute">
-          {view.totalRounds} rounds · 6 balloons each · the host starts the game from their phone.
+          {view.totalRounds} rounds · about {view.lobby?.estimateMin ?? "?"} min · the host starts the game from their phone.
         </p>
       </div>
     </div>
@@ -186,7 +193,7 @@ function RoundStage({ view, room }: { view: TvView; room: Room }) {
               `Round ${r.number} of ${view.totalRounds}`
             )}
             {view.mode === "mixed" && (
-              <span className="ml-[0.8vw]">· {r.mode === "emoji" ? "😀 Emoji Decode" : r.mode === "mlt" ? "👑 Most Likely To" : "🔤 Hangman"}</span>
+              <span className="ml-[0.8vw]">· {MODE_NAMES[r.mode]}</span>
             )}
           </p>
         </div>
@@ -195,6 +202,7 @@ function RoundStage({ view, room }: { view: TvView; room: Room }) {
           {view.pattern && <Pattern cells={view.pattern} variant="tv" reveal={revealing} />}
           {r.mode === "emoji" && <EmojiClue view={view} revealing={revealing} />}
           {r.mode === "mlt" && (revealing && view.reveal ? <MltReveal view={view} /> : <MltQuestion view={view} />)}
+          {r.mode === "wwi" && r.wwi && <WwiTv view={view} />}
           {revealing && rv && (
             <div className="animate-pop-in text-center text-ink">
               {rv.skipped && <p className="text-[2vw] font-bold text-orange">Skipped — no points this round</p>}
@@ -218,7 +226,13 @@ function RoundStage({ view, room }: { view: TvView; room: Room }) {
           <span>Leaderboard</span>
           {!revealing && (
             <span className="text-[1.1vw] font-normal text-mute">
-              {r.mode === "emoji" ? "attempts left" : r.mode === "mlt" ? "who has voted" : "balloons · % solved"}
+              {r.mode === "emoji"
+                ? "attempts left"
+                : r.mode === "mlt"
+                  ? "who has voted"
+                  : r.mode === "wwi"
+                    ? "scores update at each reveal"
+                    : "balloons · % solved"}
             </span>
           )}
         </h2>
@@ -299,7 +313,8 @@ export function TvScreen({ room }: { room: Room }) {
       {body}
       {view.hold === "needPlayers" && (
         <div className="fixed inset-x-0 bottom-0 z-30 bg-orange py-[1vw] text-center text-[2vw] font-black text-stage" role="alert">
-          ⏸ Most Likely To needs at least 3 players — join at {siteUrl().replace(/^https?:\/\//, "")}/join with code {view.code}
+          ⏸ {MODE_NAMES[view.mode].replace(/^\S+ /, "")} needs at least {view.holdMin ?? 3} players — join at{" "}
+          {siteUrl().replace(/^https?:\/\//, "")}/join with code {view.code}
         </div>
       )}
       <FloatingReactions reactions={view.reactions} serverNow={room.serverNow} />

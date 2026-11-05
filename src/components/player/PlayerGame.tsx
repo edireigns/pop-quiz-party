@@ -6,9 +6,12 @@ import { Keyboard } from "@/components/game/Keyboard";
 import { Pattern } from "@/components/game/Pattern";
 import { Timer, useRemaining } from "@/components/game/Timer";
 import { Button, ConnectionBanner, Logo, Panel, RoomGate, Stage, Toast } from "@/components/ui";
-import { REACTION_EMOJIS } from "@/data/categories";
 import { useRoom, useTicker, type ApiError } from "@/lib/client/useRoom";
 import type { PlayerView } from "@/lib/game/views";
+import { Celebrate, Reactions } from "./shared";
+import { hasWwiMode, PromptSubmit, WwiRevealScreen, WwiRound } from "./WwiScreens";
+
+export { Reactions };
 
 type Room = ReturnType<typeof useRoom<PlayerView>>;
 
@@ -93,33 +96,6 @@ function PhaseBody({ view, room, act }: { view: PlayerView; room: Room; act: (b:
 }
 
 // ---------------------------------------------------------------------------
-export function Reactions({ act }: { act: (b: Record<string, unknown>) => Promise<unknown> }) {
-  const [cool, setCool] = useState(false);
-  return (
-    <div className="flex flex-col gap-2">
-      <p className="text-center text-sm text-mute">Send a reaction to the TV</p>
-      <div className="grid grid-cols-4 gap-2" role="group" aria-label="Emoji reactions">
-        {REACTION_EMOJIS.map((e) => (
-          <button
-            key={e}
-            type="button"
-            disabled={cool}
-            aria-label={`Send ${e}`}
-            onClick={async () => {
-              setCool(true);
-              setTimeout(() => setCool(false), 700);
-              await act({ action: "react", emoji: e });
-            }}
-            className="min-h-14 rounded-2xl bg-panel-2 text-3xl transition active:scale-90 disabled:opacity-60"
-          >
-            {e}
-          </button>
-        ))}
-      </div>
-    </div>
-  );
-}
-
 function Lobby({ view, act }: { view: PlayerView; act: (b: Record<string, unknown>) => Promise<unknown> }) {
   const [answer, setAnswer] = useState("");
   const [hint, setHint] = useState("");
@@ -137,13 +113,16 @@ function Lobby({ view, act }: { view: PlayerView; act: (b: Record<string, unknow
             ? "😀 Tonight: Emoji Decode"
             : view.mode === "mlt"
               ? "👑 Tonight: Most Likely To"
-              : view.mode === "mixed"
+              : view.mode === "wwi"
+                ? "🕵️ Tonight: Who Wrote It?"
+                : view.mode === "mixed"
                 ? `🔀 Tonight: ${view.mixedModes.map((m) => MODE_SHORT[m]).join(" + ")}`
                 : "🔤 Tonight: Hangman"}
         </p>
       </Panel>
       {view.friendWords && hasMltMode(view) && <QuestionSubmit view={view} act={act} />}
-      {view.friendWords && view.mode !== "mlt" && (
+      {view.friendWords && hasWwiMode(view) && <PromptSubmit view={view} act={act} />}
+      {view.friendWords && hasWordMode(view) && (
         <Panel className="flex flex-col gap-3">
           <h2 className="font-display text-xl font-bold">🤝 Submit a word for the group</h2>
           {sub?.status === "removed" ? (
@@ -227,6 +206,7 @@ function RoundScreen({ view, room, act }: { view: PlayerView; room: Room; act: (
     </Panel>
   );
 
+  if (r.mode === "wwi") return <WwiRound view={view} room={room} act={act} header={header} />;
   if (r.mode === "mlt") return <MltRound view={view} room={room} act={act} header={header} />;
   if (my.state === "playing" && r.mode === "emoji") return <EmojiPlaying view={view} room={room} act={act} header={header} />;
   if (my.state === "playing") return <Playing view={view} room={room} act={act} header={header} />;
@@ -281,25 +261,6 @@ function RoundScreen({ view, room, act }: { view: PlayerView; room: Room; act: (
         <Reactions act={act} />
       </Panel>
     </>
-  );
-}
-
-function Celebrate() {
-  const pieces = Array.from({ length: 28 }, (_, i) => i);
-  return (
-    <div aria-hidden className="motion-safe-only pointer-events-none fixed inset-0 z-40 overflow-hidden">
-      {pieces.map((i) => (
-        <span
-          key={i}
-          className="animate-confetti absolute top-0 block h-3 w-2 rounded-sm"
-          style={{
-            left: `${(i * 37) % 100}%`,
-            background: ["#ff4fb1", "#33e6ff", "#ffe14d", "#8dff6b", "#b18cff"][i % 5],
-            animationDelay: `${(i % 7) * 0.12}s`,
-          }}
-        />
-      ))}
-    </div>
   );
 }
 
@@ -616,6 +577,10 @@ function EmojiPlaying({ view, room, act, header }: { view: PlayerView; room: Roo
 // Most Likely To
 // ---------------------------------------------------------------------------
 const MODE_SHORT = { hangman: "Hangman", emoji: "Emoji Decode", mlt: "Most Likely To", wwi: "Who Wrote It?" } as const;
+
+function hasWordMode(view: PlayerView) {
+  return view.mode === "hangman" || view.mode === "emoji" || (view.mode === "mixed" && view.mixedModes.some((m) => m === "hangman" || m === "emoji"));
+}
 
 function hasMltMode(view: PlayerView) {
   return view.mode === "mlt" || (view.mode === "mixed" && view.mixedModes.includes("mlt"));
@@ -938,6 +903,7 @@ function RevealScreen({ view, act }: { view: PlayerView; act: (b: Record<string,
   const sd = view.round?.kind === "suddenDeath";
   const iWon = sd && rv.sdWinnerId === view.me.id;
   if (rv.mode === "mlt") return <MltResult view={view} act={act} />;
+  if (rv.mode === "wwi") return <WwiRevealScreen view={view} act={act} />;
   return (
     <>
       <Panel className="flex flex-col items-center gap-3 text-center">
@@ -989,7 +955,9 @@ function LoserPickScreen({ view, room, act }: { view: PlayerView; room: Room; ac
           <p className="text-6xl" aria-hidden>
             🎯
           </p>
-          <p className="font-display mt-2 text-2xl font-black">{lp.nickname} is picking the next category…</p>
+          <p className="font-display mt-2 text-2xl font-black">
+            {lp.nickname} is picking the next {lp.kind === "pack" ? "question pack" : "category"}…
+          </p>
           <p className="text-mute">{secs}s left</p>
         </Panel>
         <Panel>
@@ -999,7 +967,7 @@ function LoserPickScreen({ view, room, act }: { view: PlayerView; room: Room; ac
     );
   return (
     <Panel className="flex flex-col gap-3">
-      <h2 className="font-display text-2xl font-black">🎯 Loser Picks! You choose the next category</h2>
+      <h2 className="font-display text-2xl font-black">🎯 Loser Picks! You choose the next {lp.kind === "pack" ? "question pack" : "category"}</h2>
       <p className="text-mute" role="timer">
         {secs}s left — otherwise it&apos;s random.
       </p>

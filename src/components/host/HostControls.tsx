@@ -71,8 +71,8 @@ export function HostControls({ code }: { code: string }) {
 
         {view.hold === "needPlayers" && (
           <p role="alert" className="rounded-2xl bg-orange px-4 py-3 font-bold text-stage">
-            ⚠️ Most Likely To needs at least 3 players. The game is paused here — ask someone to join (they can scan the QR code now),
-            then tap Next. Or end the game.
+            ⚠️ {MODE_LABEL[view.mode].replace(/^\S+ /, "")} needs at least {view.holdMin ?? 3} players. The game is paused here — ask
+            someone to join (they can scan the QR code now), then tap Next. Or end the game.
           </p>
         )}
         <Panel className="flex flex-col gap-2" aria-live="polite">
@@ -80,7 +80,7 @@ export function HostControls({ code }: { code: string }) {
           {r && view.phase !== "lobby" && view.phase !== "ended" && (
             <p className="text-mute">
               {r.kind === "suddenDeath" ? `Sudden Death #${r.sdAttempt}` : `Round ${r.number} of ${view.totalRounds}`}
-              {r.kind === "final" && " · 2× FINAL"} · {r.mode === "emoji" ? "😀 Emoji Decode" : r.mode === "mlt" ? "👑 Most Likely To" : "🔤 Hangman"} ·{" "}
+              {r.kind === "final" && " · 2× FINAL"} · {MODE_LABEL[r.mode]} ·{" "}
               {r.categoryEmoji} {r.category}
             </p>
           )}
@@ -96,13 +96,16 @@ export function HostControls({ code }: { code: string }) {
               ))}
             </ul>
           )}
-          {view.phase === "round" && r?.mode === "mlt" && r.question && <p className="font-display text-lg font-bold">{r.question}</p>}
+          {view.phase === "round" && (r?.mode === "mlt" || r?.mode === "wwi") && r.question && (
+            <p className="font-display text-lg font-bold">{r.question}</p>
+          )}
           {view.phase === "round" && r && <Timer timer={r.timer} serverNow={host.serverNow} />}
           {view.progress && r?.mode === "mlt" && (
             <p className="text-sm">
               🗳️ {view.progress.total - view.progress.playing} of {view.progress.total} voted (votes stay secret — even from you)
             </p>
           )}
+          {view.phase === "round" && r?.wwi && <WwiHostPanel view={view} run={run} />}
           {view.progress && r?.mode !== "mlt" && (
             <p className="text-sm">
               <span className="text-lime">✓ {view.progress.solved} solved</span> · <span className="text-red">💥 {view.progress.out} out</span> ·{" "}
@@ -138,7 +141,7 @@ export function HostControls({ code }: { code: string }) {
               <Segmented
                 label="Game mode"
                 value={view.settings.mode ?? "hangman"}
-                options={(["hangman", "emoji", "mlt", "mixed"] as const).map((m) => ({ value: m, label: MODE_LABEL[m] }))}
+                options={(["hangman", "emoji", "mlt", "wwi", "mixed"] as const).map((m) => ({ value: m, label: MODE_LABEL[m] }))}
                 onChange={(m) => void run({ action: "updateSettings", settings: { mode: m } })}
               />
             </div>
@@ -149,13 +152,23 @@ export function HostControls({ code }: { code: string }) {
               variant="lime"
               className="col-span-2"
               onClick={busyGuard({ action: "start" })}
-              disabled={view.players.length === 0 || (view.settings.mode === "mlt" && view.players.length < 3)}
+              disabled={
+                view.players.length === 0 ||
+                (view.settings.mode === "mlt" && view.players.length < 3) ||
+                (view.settings.mode === "wwi" && view.players.length < 4)
+              }
             >
               ▶ Start game
             </Button>
           )}
           {view.phase === "lobby" && view.settings.mode === "mlt" && view.players.length < 3 && (
             <p className="col-span-2 text-center text-sm text-mute">Most Likely To needs at least 3 players.</p>
+          )}
+          {view.phase === "lobby" && view.settings.mode === "wwi" && view.players.length < 4 && (
+            <p className="col-span-2 text-center text-sm text-mute">Who Wrote It? needs at least 4 players.</p>
+          )}
+          {view.phase === "lobby" && (
+            <p className="col-span-2 text-center text-sm text-mute">⏱ About {view.estimateMin} min with these settings</p>
           )}
           {view.phase === "round" &&
             (view.paused ? (
@@ -173,10 +186,14 @@ export function HostControls({ code }: { code: string }) {
               variant="ghost"
               onClick={busyGuard(
                 { action: "skip" },
-                r?.mode === "mlt" ? "Skip this question? Votes are discarded and nobody gets points." : "Skip this word? Nobody gets points for it.",
+                r?.mode === "mlt"
+                  ? "Skip this question? Votes are discarded and nobody gets points."
+                  : r?.mode === "wwi"
+                    ? "Skip the rest of this question? Answers not yet revealed are discarded and earn no points."
+                    : "Skip this word? Nobody gets points for it.",
               )}
             >
-              ⏭ {r?.mode === "mlt" ? "Skip question" : "Skip word"}
+              ⏭ {r?.mode === "mlt" || r?.mode === "wwi" ? "Skip question" : "Skip word"}
             </Button>
           )}
           {view.phase === "round" && r?.mode === "emoji" && (
@@ -198,6 +215,11 @@ export function HostControls({ code }: { code: string }) {
           {(view.phase === "reveal" || view.phase === "loserPick" || view.phase === "dare") && (
             <Button big variant="lime" className="col-span-2" onClick={busyGuard({ action: "next" })}>
               {nextLabel}
+            </Button>
+          )}
+          {view.phase === "round" && !view.paused && (r?.wwi?.stage === "review" || r?.wwi?.stage === "answerReveal") && (
+            <Button big variant="lime" className="col-span-2" onClick={busyGuard({ action: "next" })}>
+              {r.wwi.stage === "review" ? "Start guessing ▶" : r.wwi.index >= r.wwi.total ? "Show leaderboard ▶" : "Next answer ▶"}
             </Button>
           )}
           {view.phase === "dare" && (
@@ -238,7 +260,9 @@ export function HostControls({ code }: { code: string }) {
                                 ? "🗳️ voted"
                                 : r?.mode === "mlt"
                                   ? "voting…"
-                                  : r?.mode === "emoji"
+                                  : r?.mode === "wwi"
+                                    ? ""
+                                    : r?.mode === "emoji"
                                 ? `🎯×${rival.lives}`
                                 : `${rival.pct}%`}
                       </span>
@@ -273,5 +297,61 @@ export function HostControls({ code }: { code: string }) {
       </main>
       <Toast message={toast?.msg ?? null} tone={toast?.tone} />
     </Stage>
+  );
+}
+
+/** Who Wrote It? on the host's phone: totals only, the answer on screen and the selected answers still to come — never who wrote them. */
+function WwiHostPanel({ view, run }: { view: HostView; run: (body: Record<string, unknown>) => Promise<unknown> }) {
+  const w = view.round!.wwi!;
+  const confirmRun = (body: Record<string, unknown>, text: string) => () => {
+    if (confirm(text)) void run(body);
+  };
+  return (
+    <div className="flex flex-col gap-2 rounded-2xl bg-stage p-3">
+      {w.stage === "writing" && (
+        <p>
+          📝 <strong>{w.submitted}</strong> of {w.writers} answers in
+        </p>
+      )}
+      {w.stage === "review" && <p>✍️ {w.total} answers selected — guessing starts in a moment.</p>}
+      {w.stage === "guessing" && view.wwiCurrent && (
+        <>
+          <p className="text-sm text-mute">
+            Answer {w.index} of {w.total} on screen · 🕵️ {w.guessed} of {w.guessers} guessed
+          </p>
+          <p className="font-display text-lg font-bold break-words text-yellow">“{view.wwiCurrent.text}”</p>
+          <Button
+            variant="ghost"
+            onClick={confirmRun({ action: "skipAnswer" }, "Skip this answer? Its author stays secret and nobody gets points for it.")}
+          >
+            ⏭ Skip this answer
+          </Button>
+        </>
+      )}
+      {w.stage === "answerReveal" && w.revealed && (
+        <p>
+          ✍️ Written by <strong>{w.revealed.authorName}</strong> · {w.revealed.correct} of {w.revealed.guessers} guessed right
+        </p>
+      )}
+      {view.wwiUpcoming.length > 0 && (
+        <>
+          <h3 className="mt-1 text-sm font-bold">Coming up (only you see these — remove any before they hit the TV)</h3>
+          <ul className="flex flex-col gap-1">
+            {view.wwiUpcoming.map((a) => (
+              <li key={a.id} className="flex items-center justify-between gap-2 rounded-xl bg-panel px-3 py-1">
+                <span className="min-w-0 break-words">“{a.text}”</span>
+                <button
+                  className="min-h-11 shrink-0 rounded-full px-3 text-sm font-bold text-red"
+                  aria-label={`Remove answer ${a.text}`}
+                  onClick={confirmRun({ action: "removeAnswer", answerId: a.id }, `Remove “${a.text}”? It won't be shown.`)}
+                >
+                  Remove
+                </button>
+              </li>
+            ))}
+          </ul>
+        </>
+      )}
+    </div>
   );
 }

@@ -398,7 +398,7 @@ export function tvView(s: GameState, now: number): TvView {
             estimateMin: estimateMinutes(s.settings),
           }
         : null,
-    pattern: r && s.phase !== "lobby" && r.mode !== "emoji" ? (r.endedAt ? maskAnswer(r.answer, new Set("ABCDEFGHIJKLMNOPQRSTUVWXYZ")) : maskAnswer(r.answer, new Set())) : null,
+    pattern: r && s.phase !== "lobby" && r.mode !== "emoji" && r.mode !== "wwi" ? (r.endedAt ? maskAnswer(r.answer, new Set("ABCDEFGHIJKLMNOPQRSTUVWXYZ")) : maskAnswer(r.answer, new Set())) : null,
     rivals: s.phase === "lobby" ? [] : rivalsFor(s, now, true),
     reactions: s.reactions.map((x) => ({ id: x.id, emoji: x.emoji, nickname: nameOf(s, x.playerId)!, at: x.at })),
     dareEnabled: s.settings.dareWheel,

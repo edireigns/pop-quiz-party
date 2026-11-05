@@ -121,7 +121,7 @@ export function TvLeaderboard({
                   <span className="font-bold text-lime">🗳️ voted</span>
                 ) : mode === "mlt" ? (
                   <span className="text-mute">voting…</span>
-                ) : mode === "emoji" ? (
+                ) : mode === "wwi" ? null : mode === "emoji" ? (
                   <>
                     <AttemptPips left={r.lives} />
                     <span className="w-[5.5em] text-mute">answering…</span>

@@ -7,9 +7,9 @@ import { QrCode } from "@/components/QrCode";
 import { Segmented, Toggle } from "@/components/Segmented";
 import { useHost } from "@/components/host/useHost";
 import { Button, ConnectionBanner, Logo, Panel, RoomGate, Stage, Toast } from "@/components/ui";
-import { CATEGORY_EMOJI, CATEGORY_LABELS, PACK_EMOJI, PACK_LABELS } from "@/data/categories";
+import { CATEGORY_EMOJI, CATEGORY_LABELS, PACK_EMOJI, PACK_LABELS, WWI_PACK_EMOJI, WWI_PACK_LABELS } from "@/data/categories";
 import { siteUrl } from "@/lib/client/storage";
-import type { CategoryId, PackId, RoundMode, Settings } from "@/lib/game/types";
+import type { CategoryId, PackId, RoundMode, Settings, WwiPackId } from "@/lib/game/types";
 
 const ALL_CATS: CategoryId[] = ["tv", "genz", "movies", "music", "memes", "food", "college", "mixed", "inside"];
 
@@ -56,6 +56,7 @@ export default function HostPrep() {
   const [joke, setJoke] = useState({ answer: "", hint: "" });
   const [clueForm, setClueForm] = useState({ clue: "", answer: "", alternates: "" });
   const [questionText, setQuestionText] = useState("");
+  const [promptText, setPromptText] = useState("");
   const [dare, setDare] = useState("");
 
   if (token === null)
@@ -72,6 +73,7 @@ export default function HostPrep() {
   const hasHangman = inMix("hangman");
   const hasEmoji = inMix("emoji");
   const hasMlt = inMix("mlt");
+  const hasWwi = inMix("wwi");
   const hasWords = hasHangman || hasEmoji;
   const toggleMixed = (m: RoundMode) => {
     const next = mixedModes.includes(m) ? mixedModes.filter((x) => x !== m) : [...mixedModes, m];
@@ -81,6 +83,11 @@ export default function HostPrep() {
     const packs = s.packs ?? [];
     const next = packs.includes(p) ? packs.filter((x) => x !== p) : [...packs, p];
     if (next.length) void set({ packs: next });
+  };
+  const toggleWwiPack = (p: WwiPackId) => {
+    const packs = s.wwiPacks ?? [];
+    const next = packs.includes(p) ? packs.filter((x) => x !== p) : [...packs, p];
+    if (next.length) void set({ wwiPacks: next });
   };
   const base = siteUrl();
   const joinUrl = `${base}/play/${view.code}`;
@@ -148,6 +155,7 @@ export default function HostPrep() {
                 { value: "hangman", label: "🔤 Hangman" },
                 { value: "emoji", label: "😀 Emoji Decode" },
                 { value: "mlt", label: "👑 Most Likely To" },
+                { value: "wwi", label: "🕵️ Who Wrote It?" },
                 { value: "mixed", label: "🔀 Mixed" },
               ]}
               onChange={(v) => set({ mode: v })}
@@ -156,6 +164,8 @@ export default function HostPrep() {
               {mode === "hangman" && "Classic: solve the word letter by letter before your 6 balloons pop."}
               {mode === "emoji" && "The TV shows an emoji clue — type the answer on your phone. 3 attempts per round."}
               {mode === "mlt" && "The TV asks “Who is most likely to…?” — everyone votes on their phone. Needs at least 3 players."}
+              {mode === "wwi" &&
+                "Everyone writes an anonymous answer to a question, then guesses who wrote each answer shown on the TV. Needs at least 4 players."}
               {mode === "mixed" && "Rotates through the modes you pick, one per round, in order. One shared leaderboard."}
             </p>
             {mode === "mixed" && (
@@ -167,6 +177,7 @@ export default function HostPrep() {
                       ["hangman", "🔤 Hangman"],
                       ["emoji", "😀 Emoji Decode"],
                       ["mlt", "👑 Most Likely To"],
+                      ["wwi", "🕵️ Who Wrote It?"],
                     ] as const
                   ).map(([m, label]) => {
                     const on = mixedModes.includes(m);
@@ -188,6 +199,9 @@ export default function HostPrep() {
                 {mixedModes.includes("mlt") && (
                   <p className="mt-2 text-sm text-mute">Most Likely To rounds are skipped while fewer than 3 players are in the game.</p>
                 )}
+                {mixedModes.includes("wwi") && (
+                  <p className="mt-2 text-sm text-mute">Who Wrote It? rounds are skipped while fewer than 4 players are in the game.</p>
+                )}
               </fieldset>
             )}
           </div>
@@ -198,6 +212,9 @@ export default function HostPrep() {
             options={[5, 10, 15, 20].map((n) => ({ value: n as Settings["rounds"], label: String(n) }))}
             onChange={(v) => set({ rounds: v })}
           />
+          <p className="-mt-3 text-sm text-mute" role="status">
+            ⏱ Estimated game length: <strong className="text-ink">about {view.estimateMin} min</strong>
+          </p>
           {hasWords && (
             <Segmented
               label={hasMlt ? "Round timer (word rounds)" : "Round timer"}
@@ -216,9 +233,57 @@ export default function HostPrep() {
               onChange={(v) => set({ voteSec: v })}
             />
           )}
+          {hasWwi && (
+            <>
+              <Segmented
+                label="Writing timer (Who Wrote It?)"
+                value={s.writeSec ?? 45}
+                disabled={locked}
+                options={[30, 45, 60].map((n) => ({ value: n as Settings["writeSec"], label: `${n}s` }))}
+                onChange={(v) => set({ writeSec: v })}
+              />
+              <Segmented
+                label="Guessing timer (per answer)"
+                value={s.guessSec ?? 15}
+                disabled={locked}
+                options={[10, 15, 20].map((n) => ({ value: n as Settings["guessSec"], label: `${n}s` }))}
+                onChange={(v) => set({ guessSec: v })}
+              />
+              <Segmented
+                label="Answers shown per round"
+                value={s.answersShown ?? 3}
+                disabled={locked}
+                options={[1, 3, 5].map((n) => ({ value: n as Settings["answersShown"], label: String(n) }))}
+                onChange={(v) => set({ answersShown: v })}
+              />
+              <fieldset disabled={locked}>
+                <legend className="mb-2 font-bold">{hasMlt ? "Who Wrote It? question packs" : "Question packs"}</legend>
+                <div className="flex flex-wrap gap-2">
+                  {(["hypotheticals", "college", "friends", "chaos", "habits", "custom"] as WwiPackId[])
+                    .filter((p) => p !== "custom" || (view.customPromptCount ?? 0) > 0)
+                    .map((p) => {
+                      const on = (s.wwiPacks ?? []).includes(p);
+                      return (
+                        <button
+                          key={p}
+                          type="button"
+                          aria-pressed={on}
+                          onClick={() => toggleWwiPack(p)}
+                          className={`min-h-12 rounded-xl border-2 px-3 font-bold transition ${
+                            on ? "border-violet bg-violet text-stage" : "border-line bg-stage text-ink hover:border-violet"
+                          }`}
+                        >
+                          <span aria-hidden>{WWI_PACK_EMOJI[p]}</span> {WWI_PACK_LABELS[p]}
+                        </button>
+                      );
+                    })}
+                </div>
+              </fieldset>
+            </>
+          )}
           {hasMlt && (
             <fieldset disabled={locked}>
-              <legend className="mb-2 font-bold">Question packs</legend>
+              <legend className="mb-2 font-bold">{hasWwi ? "Most Likely To question packs" : "Question packs"}</legend>
               <div className="flex flex-wrap gap-2">
                 {(["college", "friends", "chaos", "future", "habits", "custom"] as PackId[])
                   .filter((p) => p !== "custom" || (view.customQuestionCount ?? 0) > 0)
@@ -285,11 +350,12 @@ export default function HostPrep() {
             onChange={(v) => set({ content: v })}
           />
           <Toggle
-            label={hasMlt && !hasWords ? "Friend-written questions" : "Friend-written words"}
+            label={(hasMlt || hasWwi) && !hasWords ? "Friend-written questions" : "Friend-written words"}
             description={[
               hasHangman && !hasEmoji ? "Each player can submit one word in the lobby." : "",
               hasEmoji ? "Each player submits one word plus an emoji clue for it." : "",
               hasMlt ? "Each player can submit one Most Likely To question (always anonymous)." : "",
+              hasWwi ? "Each player can submit one Who Wrote It? question (always anonymous, no author points)." : "",
               "Used for about a third of the rounds.",
             ]
               .filter(Boolean)
@@ -496,6 +562,58 @@ export default function HostPrep() {
           </Panel>
         )}
 
+        {hasWwi && (
+          <Panel className="flex flex-col gap-3">
+            <h2 className="font-display text-xl font-bold">
+              <span aria-hidden>🕵️</span> Your Who Wrote It? questions <span className="text-base font-normal text-mute">(optional)</span>
+            </h2>
+            <p className="text-sm text-mute">
+              Quick, playful questions anyone can answer in a few words — no secrets or personal topics. 10–120 characters, e.g.
+              “What would our group&apos;s reality show be called?”
+            </p>
+            {view.customPrompts === null ? (
+              <p className="text-mute">{view.customPromptCount} custom questions are locked in for this game.</p>
+            ) : (
+              <>
+                <form
+                  className="flex gap-2"
+                  onSubmit={async (e) => {
+                    e.preventDefault();
+                    if (await run({ action: "addCustomPrompt", text: promptText }, "Question added")) setPromptText("");
+                  }}
+                >
+                  <label className="sr-only" htmlFor="cp">
+                    Custom Who Wrote It? question
+                  </label>
+                  <input
+                    id="cp"
+                    value={promptText}
+                    maxLength={120}
+                    onChange={(e) => setPromptText(e.target.value)}
+                    placeholder="What would our group's reality show be called?"
+                    className="min-h-12 min-w-0 flex-1 rounded-xl border-2 border-line bg-stage px-3"
+                  />
+                  <Button type="submit" disabled={promptText.trim().length < 10}>
+                    Add
+                  </Button>
+                </form>
+                {view.customPrompts.length > 0 && (
+                  <ul className="flex flex-col gap-2">
+                    {view.customPrompts.map((q) => (
+                      <li key={q.id} className="flex items-center justify-between gap-2 rounded-xl bg-stage px-3 py-2">
+                        <span className="min-w-0 break-words">{q.text}</span>
+                        <Button variant="ghost" aria-label={`Remove question ${q.text}`} onClick={() => run({ action: "removeCustomPrompt", id: q.id })}>
+                          ✕
+                        </Button>
+                      </li>
+                    ))}
+                  </ul>
+                )}
+              </>
+            )}
+          </Panel>
+        )}
+
         <Panel className="flex flex-col gap-3">
           <h2 className="font-display text-xl font-bold">
             4. <span aria-hidden>🎡</span> Custom dares <span className="text-base font-normal text-mute">(optional)</span>
@@ -542,10 +660,11 @@ export default function HostPrep() {
         {s.friendWords && !locked && (
           <Panel className="flex flex-col gap-3">
             <h2 className="font-display text-xl font-bold">
-              5. <span aria-hidden>🤝</span> Friend submissions ({view.submissions.length + (view.questionSubs?.length ?? 0)})
+              5. <span aria-hidden>🤝</span> Friend submissions (
+              {view.submissions.length + (view.questionSubs?.length ?? 0) + (view.promptSubs?.length ?? 0)})
             </h2>
             <p className="text-sm text-mute">Only you can see these. Remove anything you don&apos;t want played.</p>
-            {view.submissions.length === 0 && (view.questionSubs?.length ?? 0) === 0 ? (
+            {view.submissions.length === 0 && (view.questionSubs?.length ?? 0) === 0 && (view.promptSubs?.length ?? 0) === 0 ? (
               <p className="text-mute">No submissions yet — players add them from their phones in the lobby.</p>
             ) : view.submissions.length === 0 ? null : (
               <ul className="flex flex-col gap-2">
@@ -572,6 +691,21 @@ export default function HostPrep() {
                     <li key={q.id} className="flex items-center justify-between gap-2 rounded-xl bg-stage px-3 py-2">
                       <span className="min-w-0 break-words">{q.text}</span>
                       <Button variant="ghost" aria-label={`Remove question ${q.text}`} onClick={() => run({ action: "removeQuestionSub", id: q.id })}>
+                        Remove
+                      </Button>
+                    </li>
+                  ))}
+                </ul>
+              </>
+            )}
+            {hasWwi && (view.promptSubs?.length ?? 0) > 0 && (
+              <>
+                <h3 className="font-bold">Who Wrote It? questions (anonymous — not even you see who wrote them)</h3>
+                <ul className="flex flex-col gap-2">
+                  {view.promptSubs.map((q) => (
+                    <li key={q.id} className="flex items-center justify-between gap-2 rounded-xl bg-stage px-3 py-2">
+                      <span className="min-w-0 break-words">{q.text}</span>
+                      <Button variant="ghost" aria-label={`Remove question ${q.text}`} onClick={() => run({ action: "removePromptSub", id: q.id })}>
                         Remove
                       </Button>
                     </li>
