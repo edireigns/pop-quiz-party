@@ -615,7 +615,7 @@ function EmojiPlaying({ view, room, act, header }: { view: PlayerView; room: Roo
 // ---------------------------------------------------------------------------
 // Most Likely To
 // ---------------------------------------------------------------------------
-const MODE_SHORT = { hangman: "Hangman", emoji: "Emoji Decode", mlt: "Most Likely To" } as const;
+const MODE_SHORT = { hangman: "Hangman", emoji: "Emoji Decode", mlt: "Most Likely To", wwi: "Who Wrote It?" } as const;
 
 function hasMltMode(view: PlayerView) {
   return view.mode === "mlt" || (view.mode === "mixed" && view.mixedModes.includes("mlt"));

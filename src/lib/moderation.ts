@@ -149,3 +149,26 @@ export function renderQuestion(text: string): string {
   const tail = t.replace(/^(is\s+)?most\s+likely\s+to\s+/i, "");
   return `Who is most likely to ${tail}?`;
 }
+
+/** Who Wrote It? custom questions: 10–120 characters, content filter, shown as a question. */
+export function validatePrompt(input: unknown, level: ContentLevel): Validation {
+  if (typeof input !== "string") return { ok: false, error: "Write a question." };
+  const typed = input.replace(/\s+/g, " ").trim();
+  if (typed.length < 10 || typed.length > 120) return { ok: false, error: "Questions are 10–120 characters." };
+  if (!/^[\p{L}\p{N}\p{P}\p{Zs}\p{S}]*$/u.test(typed)) return { ok: false, error: "That question has unsupported characters." };
+  if (!/[A-Za-z]{3}/.test(typed)) return { ok: false, error: "Write a question with words in it." };
+  if (isBlocked(typed, level)) return { ok: false, error: "That question isn't allowed in this game." };
+  const t = typed.replace(/[?.!\s]+$/, "");
+  return { ok: true, value: `${t.charAt(0).toUpperCase()}${t.slice(1)}?` };
+}
+
+/** Who Wrote It? answers: 1–80 characters and the game's content filter. */
+export function validateWwiAnswer(input: unknown, level: ContentLevel): Validation {
+  if (typeof input !== "string") return { ok: false, error: "Write an answer." };
+  const value = input.replace(/\s+/g, " ").trim();
+  if (!value) return { ok: false, error: "Write an answer." };
+  if ([...value].length > 80) return { ok: false, error: "Answers are 80 characters max." };
+  if (!/^[\p{L}\p{N}\p{P}\p{Zs}\p{S}\p{M}]*$/u.test(value)) return { ok: false, error: "That answer has unsupported characters." };
+  if (isBlocked(value, level)) return { ok: false, error: "That answer isn't allowed in this game — try another." };
+  return { ok: true, value };
+}

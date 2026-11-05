@@ -80,7 +80,7 @@ export function TvLeaderboard({
   rivals: RivalEntry[];
   showRound: boolean;
   showRivals: boolean;
-  mode?: "hangman" | "emoji" | "mlt";
+  mode?: "hangman" | "emoji" | "mlt" | "wwi";
 }) {
   const ref = useFlip(entries.map((e) => e.id));
   const rivalMap = new Map(rivals.map((r) => [r.id, r]));

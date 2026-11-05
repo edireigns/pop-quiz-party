@@ -30,7 +30,7 @@ export const CATEGORY_EMOJI: Record<BuiltInCategoryId | "inside" | "friend", str
 export const REACTION_EMOJIS = ["😂", "🔥", "😱", "👏", "💀", "🎉", "😭", "🤯"] as const;
 
 // Most Likely To question packs.
-import type { PackId } from "@/lib/game/types";
+import type { PackId, WwiPackId } from "@/lib/game/types";
 
 export const PACK_LABELS: Record<PackId, string> = {
   college: "College Life",
@@ -50,10 +50,38 @@ export const PACK_EMOJI: Record<PackId, string> = {
   custom: "✍️",
 };
 
+/** Who Wrote It? packs share labels with the Most Likely To packs where the names match. */
+export const WWI_PACK_LABELS: Record<WwiPackId, string> = {
+  hypotheticals: "Hypotheticals",
+  college: "College Life",
+  friends: "Friend Group",
+  chaos: "Chaos",
+  habits: "Funny Habits",
+  custom: "Host's Questions",
+};
+export const WWI_PACK_EMOJI: Record<WwiPackId, string> = {
+  hypotheticals: "🤔",
+  college: "🎓",
+  friends: "👯",
+  chaos: "🌪️",
+  habits: "🙃",
+  custom: "✍️",
+};
+
 /** Label for a word category, a question pack, or "friend". */
 export function labelFor(id: string): string {
-  return (CATEGORY_LABELS as Record<string, string>)[id] ?? (PACK_LABELS as Record<string, string>)[id] ?? id;
+  return (
+    (CATEGORY_LABELS as Record<string, string>)[id] ??
+    (PACK_LABELS as Record<string, string>)[id] ??
+    (WWI_PACK_LABELS as Record<string, string>)[id] ??
+    id
+  );
 }
 export function emojiFor(id: string): string {
-  return (CATEGORY_EMOJI as Record<string, string>)[id] ?? (PACK_EMOJI as Record<string, string>)[id] ?? "🎲";
+  return (
+    (CATEGORY_EMOJI as Record<string, string>)[id] ??
+    (PACK_EMOJI as Record<string, string>)[id] ??
+    (WWI_PACK_EMOJI as Record<string, string>)[id] ??
+    "🎲"
+  );
 }

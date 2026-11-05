@@ -9,7 +9,13 @@ import { useTicker } from "@/lib/client/useRoom";
 import type { HostView } from "@/lib/game/views";
 import type { GameMode } from "@/lib/game/types";
 
-export const MODE_LABEL: Record<GameMode, string> = { hangman: "🔤 Hangman", emoji: "😀 Emoji Decode", mlt: "👑 Most Likely To", mixed: "🔀 Mixed" };
+export const MODE_LABEL: Record<GameMode, string> = {
+  hangman: "🔤 Hangman",
+  emoji: "😀 Emoji Decode",
+  mlt: "👑 Most Likely To",
+  wwi: "🕵️ Who Wrote It?",
+  mixed: "🔀 Mixed",
+};
 import { useHost } from "./useHost";
 
 const PHASE_LABEL: Record<HostView["phase"], string> = {

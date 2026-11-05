@@ -7,7 +7,7 @@ import { knownLetters, remainingMs } from "./engine";
 import { EMOJI, MLT, STARTING_LIVES } from "./scoring";
 import { answerLetters } from "./answers";
 import { maskAnswer, solvedFraction, type MaskCell } from "./text";
-import type { CategoryId, GameMode, GameState, PackId, Phase, Round, RoundMode, Settings } from "./types";
+import type { CategoryId, GameMode, GameState, PackId, Phase, Round, RoundMode, Settings, WwiPackId } from "./types";
 
 export interface TimerView {
   deadline: number;
@@ -54,7 +54,7 @@ export interface RevealView {
 }
 
 export interface CategoryOption {
-  id: CategoryId | PackId;
+  id: CategoryId | PackId | WwiPackId;
   label: string;
   emoji: string;
 }
@@ -128,11 +128,11 @@ interface BaseView {
   final: FinalView | null;
 }
 
-export function categoryLabel(c: CategoryId | PackId | "friend") {
+export function categoryLabel(c: CategoryId | PackId | WwiPackId | "friend") {
   return labelFor(c);
 }
 
-export function categoryOption(id: CategoryId | PackId): CategoryOption {
+export function categoryOption(id: CategoryId | PackId | WwiPackId): CategoryOption {
   return { id, label: labelFor(id), emoji: emojiFor(id) };
 }
 

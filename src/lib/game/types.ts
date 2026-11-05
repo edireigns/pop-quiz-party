@@ -19,11 +19,11 @@ export type Difficulty = "easy" | "medium" | "hard";
 export type DifficultySetting = Difficulty | "mixed";
 export type ContentLevel = "clean" | "pg13";
 
-export const GAME_MODES = ["hangman", "emoji", "mlt", "mixed"] as const;
+export const GAME_MODES = ["hangman", "emoji", "mlt", "wwi", "mixed"] as const;
 /** The host's choice for the whole game. */
 export type GameMode = (typeof GAME_MODES)[number];
-/** What a single round plays. "mlt" = Most Likely To. */
-export const ROUND_MODES = ["hangman", "emoji", "mlt"] as const;
+/** What a single round plays. "mlt" = Most Likely To, "wwi" = Who Wrote It? */
+export const ROUND_MODES = ["hangman", "emoji", "mlt", "wwi"] as const;
 export type RoundMode = (typeof ROUND_MODES)[number];
 
 /** Most Likely To question packs ("custom" = the host's own questions). */
@@ -31,6 +31,14 @@ export const PACK_IDS = ["college", "friends", "chaos", "future", "habits", "cus
 export type PackId = (typeof PACK_IDS)[number];
 export type BuiltInPackId = Exclude<PackId, "custom">;
 export const VOTE_TIMER_OPTIONS = [15, 20, 30] as const;
+
+/** Who Wrote It? question packs ("custom" = the host's own questions). */
+export const WWI_PACK_IDS = ["hypotheticals", "college", "friends", "chaos", "habits", "custom"] as const;
+export type WwiPackId = (typeof WWI_PACK_IDS)[number];
+export type BuiltInWwiPackId = Exclude<WwiPackId, "custom">;
+export const WRITE_TIMER_OPTIONS = [30, 45, 60] as const;
+export const GUESS_TIMER_OPTIONS = [10, 15, 20] as const;
+export const ANSWERS_SHOWN_OPTIONS = [1, 3, 5] as const;
 
 export const ROUND_OPTIONS = [5, 10, 15, 20] as const;
 export const TIMER_OPTIONS = [45, 60, 90] as const;
@@ -45,6 +53,11 @@ export interface Settings {
   voteSec: (typeof VOTE_TIMER_OPTIONS)[number];
   /** Most Likely To question packs in play. */
   packs: PackId[];
+  /** Who Wrote It?: writing timer, guessing timer (per answer), answers shown per round, question packs. */
+  writeSec: (typeof WRITE_TIMER_OPTIONS)[number];
+  guessSec: (typeof GUESS_TIMER_OPTIONS)[number];
+  answersShown: (typeof ANSWERS_SHOWN_OPTIONS)[number];
+  wwiPacks: WwiPackId[];
   rounds: (typeof ROUND_OPTIONS)[number];
   timerSec: (typeof TIMER_OPTIONS)[number];
   categories: CategoryId[];
@@ -81,6 +94,10 @@ export interface PlayerStats {
   /** Most Likely To: rounds crowned (Crowd Favorite) and correct votes (Mind Reader). */
   crowns?: number;
   correctVotes?: number;
+  /** Who Wrote It?: correct guesses (Mastermind), players fooled (Undercover Agent), times their answer was guessed (Open Book). */
+  correctGuesses?: number;
+  fooled?: number;
+  timesGuessed?: number;
   /** Correct Emoji Decode answers (Emoji Whisperer award). */
   emojiSolves: number;
   livesLost: number;
@@ -107,6 +124,8 @@ export interface Player {
   answerTimes?: number[];
   /** timestamps (ms) of recent Most Likely To votes, for rate limiting */
   voteTimes?: number[];
+  /** timestamps (ms) of recent Who Wrote It? answers/guesses, for rate limiting */
+  wwiTimes?: number[];
 }
 
 /** "voted" is used by Most Likely To once a player's vote is locked. */
@@ -147,8 +166,8 @@ export interface Round {
   number: number; // main round number; sudden death keeps the last main number
   kind: RoundKind;
   sdAttempt: number; // 0 for normal rounds
-  /** Hangman/Emoji: a category. Most Likely To: a question pack. */
-  category: CategoryId | PackId | "friend";
+  /** Hangman/Emoji: a category. Most Likely To / Who Wrote It?: a question pack. */
+  category: CategoryId | PackId | WwiPackId | "friend";
   answer: string;
   hint: string;
   /** Emoji Decode only: the emoji clue (public) and accepted alternates (SECRET until the round ends). */
@@ -164,6 +183,8 @@ export interface Round {
   /** Vote totals per candidate, set when the round ends (public then). */
   totals?: Record<string, number> | null;
   crowned?: string[];
+  /** Who Wrote It? only. */
+  wwi?: WwiRound;
   source: WordSource;
   authorId: string | null;
   startedAt: number;
@@ -181,6 +202,52 @@ export interface Round {
 }
 
 export type PowerUp = "freeze" | "reveal" | "extraLife";
+
+export type WwiStage = "writing" | "review" | "guessing" | "answerReveal";
+export type WwiResult = "correct" | "wrong" | "missed" | "author";
+
+/** One shown (or about-to-be-shown) answer. authorId is SECRET until that answer's reveal. */
+export interface WwiShownAnswer {
+  answerId: string;
+  text: string;
+  authorId: string;
+  /** Same 4 names for every guesser (so comparing phones reveals nothing). */
+  choices: string[];
+  /** Each guesser's own shuffled order. */
+  orders: Record<string, string[]>;
+  /** SECRET guesser → picked player ids (2 with Double Guess). Wiped after scoring. */
+  guesses: Record<string, string[]>;
+  eliminated: Record<string, string[]>;
+  doubleGuess: Record<string, boolean>;
+}
+
+/** Public record of a revealed answer. */
+export interface WwiRevealed {
+  answerId: string;
+  text: string;
+  authorId: string;
+  correct: number;
+  wrong: number;
+  guessers: number;
+}
+
+export interface WwiRound {
+  stage: WwiStage;
+  /** SECRET author → their answer. Unshown answers are wiped when the round ends. */
+  answers: Record<string, { id: string; text: string }>;
+  /** SECRET: answer ids still to show, in order. */
+  queue: string[];
+  current: WwiShownAnswer | null;
+  /** How many answers this round will show (for "Answer 2 of 3"), and how many have started. */
+  total: number;
+  shown: number;
+  revealed: WwiRevealed[];
+  /** Answer ids the host removed (never shown). */
+  removed: string[];
+  /** Each player's private result for the answer just revealed. */
+  lastResults: Record<string, WwiResult>;
+  noAnswers: boolean;
+}
 
 export interface Submission {
   id: string;
@@ -221,7 +288,7 @@ export interface LoserPickState {
   playerId: string;
   /** Categories for word rounds, question packs for Most Likely To rounds. */
   kind?: "category" | "pack";
-  options: (CategoryId | PackId)[];
+  options: (CategoryId | PackId | WwiPackId)[];
   deadline: number;
 }
 
@@ -250,7 +317,7 @@ export interface RoundRecord {
   number: number;
   kind: RoundKind;
   answer: string;
-  category: CategoryId | PackId | "friend";
+  category: CategoryId | PackId | WwiPackId | "friend";
   source: WordSource;
   authorId: string | null;
   results: Record<string, RoundRecordEntry>;
@@ -288,9 +355,19 @@ export interface GameState {
   usedQuestions: string[];
   /** SECRET: round numbers that will use a player-submitted question. */
   questionRoundPlan: number[];
-  /** Set when a Most Likely To-only game can't start the next round (fewer than 3 players). */
+  /** Set when a Most Likely To- or Who Wrote It?-only game can't start the next round. */
   hold: "needPlayers" | null;
-  nextCategory: CategoryId | PackId | null;
+  /** How many players the held mode needs (3 for Most Likely To, 4 for Who Wrote It?). */
+  holdMin?: number | null;
+  /** Who Wrote It?: the host's questions, players' questions, questions asked, friend-question round plan,
+   * how many times each player's answers have been shown, and who has written at least one answer. */
+  customPrompts: { id: string; text: string }[];
+  promptSubs: { id: string; playerId: string; text: string; status: "pending" | "used" | "removed" }[];
+  usedPrompts: string[];
+  wwiRoundPlan: number[];
+  wwiShownCount: Record<string, number>;
+  wwiWriters: string[];
+  nextCategory: CategoryId | PackId | WwiPackId | null;
   loserPick: LoserPickState | null;
   dare: DareState | null;
   lastDareRound: number;

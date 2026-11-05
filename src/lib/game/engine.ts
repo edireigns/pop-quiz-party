@@ -35,6 +35,12 @@ import {
   type InsideClue,
   type RoundMode,
   type BuiltInPackId,
+  type BuiltInWwiPackId,
+  ANSWERS_SHOWN_OPTIONS,
+  GUESS_TIMER_OPTIONS,
+  WRITE_TIMER_OPTIONS,
+  WWI_PACK_IDS,
+  type WwiPackId,
   PACK_IDS,
   type PackId,
   ROUND_MODES,
@@ -57,6 +63,7 @@ import {
 export const BUILTIN_CATEGORIES: BuiltInCategoryId[] = ["tv", "genz", "movies", "music", "memes", "food", "college", "mixed"];
 
 export const BUILTIN_PACKS: BuiltInPackId[] = ["college", "friends", "chaos", "future", "habits"];
+export const BUILTIN_WWI_PACKS: BuiltInWwiPackId[] = ["hypotheticals", "college", "friends", "chaos", "habits"];
 export const DEFAULT_MIXED_MODES: RoundMode[] = ["hangman", "emoji"];
 export const MLT_SUDDEN_DEATH_QUESTION = "Who deserves the crown tonight?";
 
@@ -65,6 +72,10 @@ export const DEFAULT_SETTINGS: Settings = {
   mixedModes: [...DEFAULT_MIXED_MODES],
   voteSec: 20,
   packs: [...BUILTIN_PACKS],
+  writeSec: 45,
+  guessSec: 15,
+  answersShown: 3,
+  wwiPacks: [...BUILTIN_WWI_PACKS],
   rounds: 10,
   timerSec: 60,
   categories: [...BUILTIN_CATEGORIES],
@@ -186,6 +197,17 @@ export function upgradeState(s: GameState): GameState {
   if (!Array.isArray((s.settings as Partial<Settings>).mixedModes)) s.settings.mixedModes = [...DEFAULT_MIXED_MODES];
   if (!(s.settings as Partial<Settings>).voteSec) s.settings.voteSec = 20;
   if (!Array.isArray((s.settings as Partial<Settings>).packs)) s.settings.packs = [...BUILTIN_PACKS];
+  if (!(s.settings as Partial<Settings>).writeSec) s.settings.writeSec = 45;
+  if (!(s.settings as Partial<Settings>).guessSec) s.settings.guessSec = 15;
+  if (!(s.settings as Partial<Settings>).answersShown) s.settings.answersShown = 3;
+  if (!Array.isArray((s.settings as Partial<Settings>).wwiPacks)) s.settings.wwiPacks = [...BUILTIN_WWI_PACKS];
+  if (!Array.isArray(any.customPrompts)) s.customPrompts = [];
+  if (!Array.isArray(any.promptSubs)) s.promptSubs = [];
+  if (!Array.isArray(any.usedPrompts)) s.usedPrompts = [];
+  if (!Array.isArray(any.wwiRoundPlan)) s.wwiRoundPlan = [];
+  if (!any.wwiShownCount || typeof any.wwiShownCount !== "object") s.wwiShownCount = {};
+  if (!Array.isArray(any.wwiWriters)) s.wwiWriters = [];
+  if (any.holdMin === undefined) s.holdMin = null;
   if (!Array.isArray(any.customQuestions)) s.customQuestions = [];
   if (!Array.isArray(any.questionSubs)) s.questionSubs = [];
   if (!Array.isArray(any.usedQuestions)) s.usedQuestions = [];
@@ -233,6 +255,7 @@ export function createGame(opts: { roomId: string; code: string; now: number; se
       ...DEFAULT_SETTINGS,
       mixedModes: [...DEFAULT_SETTINGS.mixedModes],
       packs: [...DEFAULT_SETTINGS.packs],
+      wwiPacks: [...DEFAULT_SETTINGS.wwiPacks],
       categories: [...DEFAULT_SETTINGS.categories],
       ...opts.settings,
     },
@@ -255,6 +278,13 @@ export function createGame(opts: { roomId: string; code: string; now: number; se
     usedQuestions: [],
     questionRoundPlan: [],
     hold: null,
+    holdMin: null,
+    customPrompts: [],
+    promptSubs: [],
+    usedPrompts: [],
+    wwiRoundPlan: [],
+    wwiShownCount: {},
+    wwiWriters: [],
     nextCategory: null,
     loserPick: null,
     dare: null,
@@ -277,7 +307,7 @@ export function updateSettings(s: GameState, patch: Partial<Settings>) {
   const next: Settings = { ...s.settings };
   if (patch.mode !== undefined) {
     if (!GAME_MODES.includes(patch.mode as GameMode))
-      throw new GameError("bad_settings", "Game mode must be Hangman, Emoji Decode, Most Likely To or Mixed.");
+      throw new GameError("bad_settings", "Game mode must be Hangman, Emoji Decode, Most Likely To, Who Wrote It? or Mixed.");
     next.mode = patch.mode;
   }
   if (patch.mixedModes !== undefined) {
@@ -295,6 +325,24 @@ export function updateSettings(s: GameState, patch: Partial<Settings>) {
     const packs = [...new Set(patch.packs)].filter((p): p is PackId => PACK_IDS.includes(p as PackId));
     if (packs.length === 0) throw new GameError("bad_settings", "Pick at least one question pack.");
     next.packs = packs;
+  }
+  if (patch.writeSec !== undefined) {
+    if (!WRITE_TIMER_OPTIONS.includes(patch.writeSec)) throw new GameError("bad_settings", "Writing timer must be 30, 45 or 60 seconds.");
+    next.writeSec = patch.writeSec;
+  }
+  if (patch.guessSec !== undefined) {
+    if (!GUESS_TIMER_OPTIONS.includes(patch.guessSec)) throw new GameError("bad_settings", "Guessing timer must be 10, 15 or 20 seconds.");
+    next.guessSec = patch.guessSec;
+  }
+  if (patch.answersShown !== undefined) {
+    if (!ANSWERS_SHOWN_OPTIONS.includes(patch.answersShown)) throw new GameError("bad_settings", "Answers shown per round must be 1, 3 or 5.");
+    next.answersShown = patch.answersShown;
+  }
+  if (patch.wwiPacks !== undefined) {
+    if (!Array.isArray(patch.wwiPacks)) throw new GameError("bad_settings", "Pick at least one Who Wrote It? question pack.");
+    const packs = [...new Set(patch.wwiPacks)].filter((p): p is WwiPackId => WWI_PACK_IDS.includes(p as WwiPackId));
+    if (packs.length === 0) throw new GameError("bad_settings", "Pick at least one Who Wrote It? question pack.");
+    next.wwiPacks = packs;
   }
   if (patch.rounds !== undefined) {
     if (!ROUND_OPTIONS.includes(patch.rounds)) throw new GameError("bad_settings", "Rounds must be 5, 10, 15 or 20.");
@@ -742,7 +790,7 @@ function newProgress(lives: number): PlayerProgress {
   };
 }
 
-export function startRound(s: GameState, ctx: Ctx, choice?: CategoryId | PackId | null) {
+export function startRound(s: GameState, ctx: Ctx, choice?: CategoryId | PackId | WwiPackId | null) {
   const n = s.roundsPlayed + 1;
   const kind = n >= s.settings.rounds ? "final" : "normal";
   const mode = roundModeFor(s, n);
@@ -1470,7 +1518,7 @@ function proceedToNextRound(s: GameState, ctx: Ctx) {
   startRound(s, ctx);
 }
 
-export function resolveLoserPick(s: GameState, category: CategoryId | PackId | null, ctx: Ctx) {
+export function resolveLoserPick(s: GameState, category: CategoryId | PackId | WwiPackId | null, ctx: Ctx) {
   assertPhase(s, "loserPick");
   const lp = s.loserPick!;
   const cat = category ?? pick(lp.options, ctx.random);
@@ -1482,7 +1530,7 @@ export function pickCategory(s: GameState, playerId: string, category: unknown, 
   const lp = s.loserPick!;
   if (lp.playerId !== playerId) throw new GameError("not_picker", "It's not your pick.", 403);
   if (!lp.options.includes(category as CategoryId)) throw new GameError("bad_category", "Pick one of the listed options.");
-  resolveLoserPick(s, category as CategoryId | PackId, ctx);
+  resolveLoserPick(s, category as CategoryId | PackId | WwiPackId, ctx);
 }
 
 // ---------------------------------------------------------------------------

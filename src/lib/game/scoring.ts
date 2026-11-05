@@ -88,3 +88,20 @@ export const MLT = {
   /** No freezes once this little time is left. */
   freezeCutoffMs: 5000,
 } as const;
+
+// ---------------------------------------------------------------------------
+// Who Wrote It?
+// ---------------------------------------------------------------------------
+export const WWI = {
+  /** Correctly guessing the author. */
+  correctGuess: 100,
+  /** To the author, per player who guessed wrong. */
+  foolPoints: 15,
+  minPlayers: 4,
+  /** No freezes once this little time is left. */
+  freezeCutoffMs: 5000,
+  /** Short pause after writing so the host can remove an answer before any appear. */
+  reviewMs: 5000,
+  /** How long each author reveal stays up before the next answer. */
+  answerRevealMs: 6000,
+} as const;
