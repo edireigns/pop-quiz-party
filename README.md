@@ -1,7 +1,13 @@
 # 🎈 Pop Quiz Party
 
 A neon game-show word-guessing party game for ~15 friends (up to 30).
-The **TV** shows a QR code, the blank puzzle and a live leaderboard. Everyone solves the **same phrase at the same time on their own phone**. Each wrong letter pops one of your six neon balloons. No accounts, no app installs, and a host can spin up a new game any time.
+The **TV** shows a QR code, the puzzle and a live leaderboard. Everyone solves the **same puzzle at the same time on their own phone**. No accounts, no app installs, and a host can spin up a new game any time.
+
+Three game modes, one shared leaderboard:
+
+- **🔤 Hangman** (default): guess letters. Each wrong letter pops one of your six neon balloons.
+- **😀 Emoji Decode**: the TV shows an emoji clue like 🦁👑, and you type the answer on your phone. You get 3 attempts.
+- **🔀 Mixed**: alternates Hangman and Emoji Decode every round, starting with Hangman.
 
 Built with **Next.js 16 (App Router) · TypeScript · Tailwind CSS 4 · Supabase (Postgres + Realtime) · Vercel**.
 
@@ -15,10 +21,11 @@ Built with **Next.js 16 (App Router) · TypeScript · Tailwind CSS 4 · Supabase
 4. [Deploying to Vercel](#deploying-to-vercel)
 5. [Editing word lists & dares](#editing-word-lists--dares)
 6. [How to host a game night](#how-to-host-a-game-night)
-7. [Rules & scoring](#rules--scoring)
-8. [Architecture & security](#architecture--security)
-9. [Testing](#testing)
-10. [Final checklist](#final-checklist)
+7. [Game modes](#game-modes)
+8. [Rules & scoring](#rules--scoring)
+9. [Architecture & security](#architecture--security)
+10. [Testing](#testing)
+11. [Final checklist](#final-checklist)
 
 Having trouble? Jump to [Troubleshooting](#troubleshooting) or open `/api/health` on your running site.
 
@@ -29,12 +36,12 @@ Having trouble? Jump to [Troubleshooting](#troubleshooting) or open `/api/health
 | Screen | URL | Who |
 | --- | --- | --- |
 | Landing | `/` | Anyone: **Host a new game** or **Join with a code** |
-| Host Prep | `/host/CODE/prep#k=SECRET` | Host sets up rounds, timer, categories, difficulty, content level, friend-written words, Dare Wheel, Inside Jokes and custom dares, and reviews friend submissions |
-| Host Controls | `/host/CODE#k=SECRET` | Host's phone: Start, Next, Pause/Resume, Skip, Remove player, Re-spin dare, End, Play Again. The host doesn't play. |
+| Host Prep | `/host/CODE/prep#k=SECRET` | Host picks the **Game Mode** and sets up rounds, timer, categories, difficulty, content level, friend-written words, Dare Wheel, Inside Jokes and custom dares, and reviews friend submissions |
+| Host Controls | `/host/CODE#k=SECRET` | Host's phone: Game Mode (in the lobby and after a game), Start, Next, Pause/Resume, Skip, **Drop Hint** (Emoji Decode), Remove player, Re-spin dare, End, Play Again. The host doesn't play. |
 | TV Display | `/tv/CODE` | Laptop on HDMI at 1920×1080: QR lobby, puzzle, leaderboard + rival tracker, reactions, dare wheel, podium & awards, sound with mute, full-screen button |
-| Player Phone | `/play/CODE` | Join with a nickname, play with the on-screen keyboard (a physical keyboard works too), hint, power-ups, reactions |
+| Player Phone | `/play/CODE` | Join with a nickname. Hangman: on-screen keyboard (a physical keyboard works too) and hint. Emoji Decode: large answer box with a **Show clue** button. Both: power-ups and reactions. |
 
-Game-night features: Power-ups (Freeze a rival / Reveal a letter / Extra Life, 2 uses per game), Loser Picks, Double-Points Final, Sudden Death, Dare Wheel, Emoji Reactions, End-of-Night Awards (Speed Demon, Most Lives Lost, Hint Addict, Comeback Kid, Master Stumper), optional friend-written words, and a private **Inside Jokes** category.
+Game-night features: Power-ups (Freeze a rival / Reveal a letter / Extra Life, 2 uses per game), Loser Picks, Double-Points Final, Sudden Death, Dare Wheel, Emoji Reactions, End-of-Night Awards (Speed Demon, Most Lives Lost, Hint Addict, Comeback Kid, Master Stumper, Emoji Whisperer), optional friend-written words, and a private **Inside Jokes** category.
 
 ---
 
@@ -173,6 +180,27 @@ w("Pulp Fiction", "Royale with cheese", "hard", "pg13"),
 - The word bank is `server-only`: it never ships to browsers (the e2e test checks this).
 - To add a category: add it to `CATEGORY_IDS` in `src/lib/game/types.ts`, to `src/data/categories.ts` (label and emoji), and to `WORD_BANK`.
 
+### Emoji Decode clues: [`src/data/clues.ts`](src/data/clues.ts)
+
+Each line is one clue, grouped by category (the section it's in is its category):
+
+```ts
+c("🦁👑", "The Lion King", ["Lion King"], "easy"),
+c("🍺🏓", "Beer Pong", [], "medium", "pg13"),
+//  clue    answer         accepted alternates  difficulty  content (default "clean")
+```
+
+- **clue:** emojis and spaces only. Stick to widely supported emojis (Emoji 13 or older) so every phone and TV shows them.
+- **alternates:** other names to accept, such as `"Spiderman"` or `"Fries"`. You don't need entries for case, accents, punctuation, extra spaces, a leading "the/a/an" or small typos. Those are handled automatically (see [Answer matching](#answer-matching)).
+- **difficulty / content:** same meaning as in the word bank.
+- `npm test` checks the file:
+  - 30+ clues per category, all of them emoji-only.
+  - No duplicate answers or clues.
+  - The answer and every alternate are accepted.
+  - Clean answers pass the Clean filter.
+  - No Emoji 14+ characters.
+- Like the word bank, the clue bank is `server-only` and never ships to browsers.
+
 ### Starter dares: [`src/data/dares.ts`](src/data/dares.ts)
 
 Each `d("text", "clean" | "pg13")` entry is one dare. Keep dares **safe, consensual and optional**: no alcohol, nothing physically risky, nothing degrading. Hosts can also add custom dares on the Prep screen.
@@ -186,13 +214,56 @@ The filter has two ROT13-encoded lists. `SEVERE` (slurs and explicit terms) is b
 ## How to host a game night
 
 1. On your phone, go to the site and tap **Host a new game**. **Bookmark the private host link** (it ends in `#k=…`). That link is your only key to the game, and it also brings you back if you disconnect.
-2. On Host Prep, choose rounds (5/10/15/20), the timer (45/60/90 s), categories, difficulty, Clean or PG-13, friend-written words, and the Dare Wheel (every 2/3/5 rounds). You can also add Inside Jokes and custom dares. This can be done days ahead.
+2. On Host Prep, pick the **Game Mode** (see below), then choose rounds (5/10/15/20), the timer (45/60/90 s), categories, difficulty, Clean or PG-13, friend-written words, and the Dare Wheel (every 2/3/5 rounds). You can also add Inside Jokes and custom dares. This can be done days ahead.
 3. On the laptop connected to the TV, open the **TV display link** and click **▶ Start TV**. This enables sound and goes full screen.
 4. Friends scan the QR code (or visit `/join` and type the code), then pick nicknames. If friend-written words are on, they submit one each, and you can remove any on Host Prep.
 5. Open **Host Controls** and press **Start**. After each round the TV reveals the answer and points, and the game waits for you to tap **Next**.
 6. At the end the TV shows the podium and the awards. **Play Again** resets scores and keeps the room and the players.
 
 Late joiners start with 0 points from the next round. Phones that refresh or reconnect keep their score and progress.
+
+---
+
+## Game modes
+
+**Choosing a mode:**
+- Pick it at the top of **Host Prep → Game settings**, or with the **Game mode** picker on Host Controls in the lobby.
+- After a game ends you can switch modes, then tap **Play Again**. Settings can be changed in the lobby and on the game-over screen, but not mid-game.
+- The TV lobby and every phone show which mode is on.
+- Every other setting applies to all modes: rounds, timer, categories, difficulty, content level, friend-written words and the Dare Wheel.
+
+| Mode | What happens |
+| --- | --- |
+| 🔤 Hangman (default) | Unchanged from before: guess letters before your 6 balloons pop. |
+| 😀 Emoji Decode | Every round is an emoji clue. |
+| 🔀 Mixed | Round 1 Hangman, round 2 Emoji Decode, round 3 Hangman, and so on. Answers never repeat across the two modes. |
+
+**An Emoji Decode round:**
+1. The TV shows a big emoji clue, the category, the timer and how many players have answered. The leaderboard beside it shows each player's attempts left and whether they've solved it, but never their guesses.
+2. Each player types answers on their phone, with up to 3 attempts. Each attempt is marked correct or not, without revealing the answer. The phone keeps your eyes on the TV, but **Show clue** brings the emojis up on the phone for anyone who can't see the screen well.
+3. While the round runs, the host can tap **Drop Hint** up to twice, and everyone sees it:
+   - Hint 1 is the first letter.
+   - Hint 2 is the number of words and letters.
+4. The round ends when the timer runs out or everyone has finished. The TV reveals the answer, how many players got it, the fastest correct player and each player's points. Then it waits for **Next**.
+
+Solving shows the usual celebration. Running out of attempts shows **YOU SUCK 😂** in PG-13 mode, or **YOU'RE OUT 😂** in Clean mode. Reactions stay available while you wait.
+
+**Custom clues:**
+- **Inside Jokes:** in Emoji Decode or Mixed, Host Prep has an extra form for an emoji clue, its answer and optional comma-separated alternates. Clues must be emojis and spaces only.
+- **Friend-written words:** players add an emoji clue alongside their word. It's required in Emoji Decode. In Mixed it's optional, and a word without a clue is only used in Hangman rounds. Host review, author sit-out, content filtering and +15 per stumped player all work as before.
+
+**Existing features in Emoji Decode:**
+- **Power-ups:**
+  - Freeze locks a rival's answer box for 5 s.
+  - Reveal privately shows you one letter of the answer.
+  - Extra Life gives you one more attempt.
+  - Same limit as before: 2 uses per game.
+- **Loser Picks** and the **Dare Wheel** work the same as in Hangman.
+- **Sudden Death** uses the game's mode, and Mixed uses Hangman. In Emoji Decode Sudden Death, one wrong answer eliminates you and the first correct answer wins.
+- **Awards:**
+  - Wrong attempts count toward Most Lives Lost.
+  - Hint Addict only appears when the game had Hangman rounds.
+  - **Emoji Whisperer** goes to the most correct Emoji Decode answers.
 
 ---
 
@@ -223,6 +294,29 @@ Other rules:
 - **Dare Wheel:** the player in last place overall spins the wheel. They can pass, and the host can re-spin. It auto-spins after 15 s.
 - **Friend-written words** are used for about ⅓ of the rounds (`round(rounds / 3)` of them, if enough were submitted). The author sits out that round and is revealed only after it ends. Unused submissions are never shown to anyone except the host.
 
+### Emoji Decode scoring
+
+| Event | Points |
+| --- | --- |
+| Correct answer | **+100** |
+| Speed bonus | up to **+100**, scaled linearly by time remaining |
+| Each host hint revealed before you answered | **−25** off that maximum |
+| Wrong or missing answer | **0** |
+| Final round | doubled, as in Hangman |
+
+Scores can't go below 0, and both modes add to one shared leaderboard.
+
+### Answer matching
+
+Answers are checked on the server:
+- Case, accents, punctuation and extra spaces are ignored, and so is a leading "the", "a" or "an". For example, `spiderman` matches *Spider-Man* and `lion king` matches *The Lion King*.
+- Any listed alternate is accepted.
+- Typos are forgiven by answer length, counting letters and digits only:
+  - Under 4 characters: must match exactly (`Up`, `BTS`).
+  - 4–8 characters: one typo.
+  - Longer: two typos.
+- A typo is a missing, extra or wrong letter, or two neighbouring letters swapped. Close-but-wrong guesses such as *Shark* for *Shrek* or *Toy* for *Toy Story* are rejected, and tests cover these cases.
+
 ---
 
 ## Architecture & security
@@ -233,6 +327,7 @@ Phones / TV / Host ──HTTPS──▶ Next.js API routes (Vercel) ──SQL (r
         └──── Supabase Realtime ◀───────┘  "room changed, seq=N" (no game data)
 ```
 
+- **No database migration for Emoji Decode.** Room state is one JSONB document, so the new fields are just extra keys with defaults. Rooms saved by an older version are upgraded in memory when loaded (`upgradeState`), so existing data is never rewritten or lost. `supabase/migrations/0001_init.sql` is still the only migration.
 - **The server is the source of truth.** All game state for a room is one JSONB document, changed only inside `SELECT … FOR UPDATE` transactions by a pure, unit-tested engine (`src/lib/game/engine.ts`). That covers rounds, guesses, timers, power-ups and scores.
 - **Timers without a long-running server.** The server stores deadlines. Expiry, Loser Picks timeouts and dare auto-spins are applied lazily on any request, and clients wake up at each deadline, so nothing waits on a background process. Pausing freezes the remaining time on the server.
 - **The answer never leaves the server early.** Clients only receive role-specific *views* (`src/lib/game/views.ts`):
@@ -286,9 +381,10 @@ npm test
 createdb popquiz_e2e
 npm run test:e2e
 
-# load test: 2 concurrent games × 15 players against a running server
+# load test: 2 concurrent games × 15 players against a running server (Mixed mode by default)
 BASE_URL=http://localhost:3000 DATABASE_URL=postgres://... npm run load-test
-#   GAMES=2 PLAYERS=15 ROUNDS=5 by default
+#   GAMES=2 PLAYERS=15 ROUNDS=5 MODE=mixed by default (MODE=hangman|emoji|mixed)
+#   With DATABASE_URL, some bots peek at the current Emoji answer (test oracle) so correct answers are exercised too
 
 npm run check   # lint + typecheck + tests + production build
 ```
@@ -311,6 +407,11 @@ Scripts such as `db:migrate` and `load-test` read `.env.local` themselves, and v
 | Works start to finish with only built-in words, friend words off | e2e full game asserts every round's source is `builtin` |
 | Two games at once without interference | integration "keeps two games fully separate" + load test runs 2 games concurrently |
 | Production build passes; README explains configuration and deployment | `npm run build`, this file |
+| **Emoji Decode:** Hangman unchanged when selected | all original Hangman tests still pass unchanged |
+| **Emoji Decode:** mode selection, answer matching, attempts, hint penalties, scoring, power-ups, custom clues, answer protection | `tests/unit/emoji.test.ts`, `answers.test.ts`, `clues.test.ts`, `views.test.ts` + `tests/integration/emoji-api.test.ts` |
+| **Emoji Decode:** full games in Emoji Decode and Mixed mode (host, TV, 3 phones) | `tests/e2e/modes.spec.ts` |
+| **Emoji Decode:** 15 concurrent players in Mixed mode, scores match on server, phones and TV | `MODE=mixed npm run load-test` |
+| **Emoji Decode:** rooms saved before the update keep working | unit + integration "rooms saved before Emoji Decode existed" |
 
 Before game night, confirm:
 
