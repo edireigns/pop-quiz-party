@@ -6,7 +6,7 @@
  *   BASE_URL=http://localhost:3000 DATABASE_URL=postgres://... npm run load-test
  *
  * Env: GAMES (2), PLAYERS (15), ROUNDS (5|10|15|20, default 5),
- *      MODE (hangman | emoji | mlt | mixed, default mixed),
+ *      MODE (hangman | emoji | mlt | wwi | mixed, default mixed),
  *      MIXED (modes Mixed rotates through, default "hangman,emoji,mlt").
  * With DATABASE_URL set, "skilled" bots peek at the current Emoji Decode answer
  * (a test oracle) so correct, typo'd and wrong answers are all exercised.
@@ -22,9 +22,11 @@ const BASE = (process.env.BASE_URL ?? "http://localhost:3000").replace(/\/$/, ""
 const GAMES = Number(process.env.GAMES ?? 2);
 const PLAYERS = Number(process.env.PLAYERS ?? 15);
 const ROUNDS = Number(process.env.ROUNDS ?? 5);
-const MODE = (process.env.MODE ?? "mixed") as "hangman" | "emoji" | "mlt" | "mixed";
-const MIXED = (process.env.MIXED ?? "hangman,emoji,mlt").split(",").map((m) => m.trim()) as ("hangman" | "emoji" | "mlt")[];
+const MODE = (process.env.MODE ?? "mixed") as "hangman" | "emoji" | "mlt" | "wwi" | "mixed";
+const MIXED = (process.env.MIXED ?? "hangman,emoji,mlt").split(",").map((m) => m.trim()) as ("hangman" | "emoji" | "mlt" | "wwi")[];
 const mltStats = { votes: 0, rounds: new Set<string>(), leaks: 0 };
+/** Who Wrote It?: answers written, guesses made, answers shown, and responses that leaked a secret. */
+const wwiStats = { answers: 0, guesses: 0, shown: new Set<string>(), leaks: 0 };
 const oracleDb = process.env.DATABASE_URL ? postgres(process.env.DATABASE_URL, { prepare: false, max: 2, onnotice: () => {} }) : null;
 const oracleCache = new Map<string, string | null>();
 /** Test oracle: the current round's answer straight from the DB (never from the API). */
@@ -46,7 +48,15 @@ const rand = (a: number, b: number) => a + Math.random() * (b - a);
 const pick = <T,>(xs: T[]) => xs[Math.floor(Math.random() * xs.length)];
 
 const stats = { requests: 0, errors5xx: 0, unexpected4xx: 0, rateLimited: 0, lat: [] as number[], byStatus: new Map<number, number>(), limitedBy: new Map<string, number>() };
-const EXPECTED_CONFLICTS = new Set(["vote_locked", "too_late", "already_double", "wrong_mode", "no_more_hints", "wrong_phase", "finished", "frozen", "already_guessed", "not_playing", "sitting_out", "paused", "already_frozen", "bad_target", "no_powerups_left", "already_spun", "not_picker", "not_spinner", "round_running", "nothing_to_reveal", "no_hints", "no_powerups", "max_lives"]);
+// bad_guess: a bot guessing from a view that is a few seconds stale, after the next answer came up.
+const EXPECTED_CONFLICTS = new Set(["bad_guess", "answer_locked", "writing_closed", "not_guessing", "guess_locked", "one_boost", "already_used", "nothing_to_eliminate", "already_double", "vote_locked", "too_late", "already_double", "wrong_mode", "no_more_hints", "wrong_phase", "finished", "frozen", "already_guessed", "not_playing", "sitting_out", "paused", "already_frozen", "bad_target", "no_powerups_left", "already_spun", "not_picker", "not_spinner", "round_running", "nothing_to_reveal", "no_hints", "no_powerups", "max_lives"]);
+
+/** Test oracle: who wrote the answer on screen, straight from the DB (never from the API). */
+async function wwiAuthor(code: string): Promise<string | null> {
+  if (!oracleDb) return null;
+  const [row] = await oracleDb`select state->'round'->'wwi'->'current'->>'authorId' as a from rooms where code = ${code}`;
+  return row?.a ?? null;
+}
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 async function req(path: string, opts: { method?: string; body?: unknown; headers?: Record<string, string> } = {}): Promise<{ status: number; body: any }> {
@@ -63,6 +73,10 @@ async function req(path: string, opts: { method?: string; body?: unknown; header
   try {
     body = text ? JSON.parse(text) : {};
   } catch {}
+  // Who Wrote It? anonymity: never the answer map, picks or results of others, and no author before its reveal.
+  if (/"orders"|"guesses"|"eliminated":\[|"answers":\{|"queue"|"lastResults"|"wwiShownCount"/.test(text)) wwiStats.leaks++;
+  const view = body?.view ?? body;
+  if (view?.round?.wwi && !view.reveal && view.round.wwi.stage !== "answerReveal" && text.includes('"authorId"')) wwiStats.leaks++;
   stats.lat.push(performance.now() - t0);
   stats.requests++;
   stats.byStatus.set(res.status, (stats.byStatus.get(res.status) ?? 0) + 1);
@@ -92,7 +106,7 @@ async function runGame(g: number) {
   const code: string = room.code;
   const H = { "x-host-token": room.hostToken };
   await req(`/api/rooms/${code}/host`, {
-    body: { action: "updateSettings", settings: { mode: MODE, mixedModes: MIXED, voteSec: 20, rounds: ROUNDS, timerSec: 45, dareWheel: true, dareEvery: 2, friendWords: true, categories: ["movies", "food", "tv", "mixed"] } },
+    body: { action: "updateSettings", settings: { mode: MODE, mixedModes: MIXED, voteSec: 20, writeSec: 30, guessSec: 10, answersShown: 3, rounds: ROUNDS, timerSec: 45, dareWheel: true, dareEvery: 2, friendWords: true, categories: ["movies", "food", "tv", "mixed"] } },
     headers: H,
   });
   const bots: Bot[] = [];
@@ -131,6 +145,44 @@ async function runGame(g: number) {
         continue;
       }
       if (v.phase === "ended") break;
+      if (v.phase === "round" && !v.paused && v.round.mode === "wwi") {
+        // Who Wrote It?: write one answer, then guess on every answer that isn't yours.
+        const w = v.round.wwi;
+        const mine = v.my?.wwi;
+        if (mine && w.stage === "writing" && !mine.submitted) {
+          await sleep(rand(1000, 6000));
+          const { status } = await req(`/api/rooms/${code}/play`, {
+            body: { action: "writeAnswer", text: `${pick(["Tacos", "A nap", "Glitter", "Karaoke", "Socks"])} ${Math.random().toString(36).slice(2, 6)} 🎉` },
+            headers: H,
+          });
+          if (status === 200) wwiStats.answers++;
+        } else if (mine && w.stage === "guessing" && !mine.isAuthor && mine.picks.length < mine.pickLimit && mine.choices.length) {
+          const key = `${v.round.number}-${w.index}-${w.answer}`;
+          wwiStats.shown.add(`${code}:${key}`);
+          if (key !== roundKey) {
+            roundKey = key;
+            if (b.usedPowerups < 2 && Math.random() < 0.25) {
+              b.usedPowerups++;
+              const type = pick(["freeze", "reveal", "extraLife"]);
+              await req(`/api/rooms/${code}/play`, { body: { action: "powerup", type, targetId: v.my.freezeTargets[0]?.id }, headers: H });
+              await sleep(300);
+              continue; // refetch: choices may have changed
+            }
+          }
+          await sleep(rand(500, 4000));
+          const choices = mine.choices as { id: string }[];
+          const author = Math.random() < b.skill * 0.5 ? await wwiAuthor(code) : null;
+          const target = choices.find((c) => c.id === author) ?? pick(choices.filter((c) => !mine.picks.includes(c.id)));
+          if (target) {
+            const { status } = await req(`/api/rooms/${code}/play`, { body: { action: "wwiGuess", targetId: target.id }, headers: H });
+            if (status === 200) wwiStats.guesses++;
+          }
+          await sleep(rand(300, 600));
+          continue;
+        }
+        await sleep(rand(600, 1200));
+        continue;
+      }
       if (v.phase === "round" && v.my?.state === "playing" && !v.paused && v.round.mode === "mlt") {
         // Most Likely To: maybe use a power-up, then vote (most of the room agrees on someone).
         const key = `${v.round.number}-${v.round.sdAttempt}`;
@@ -220,6 +272,7 @@ async function runGame(g: number) {
 
   // Host
   await req(`/api/rooms/${code}/host`, { body: { action: "start" }, headers: H });
+  const hostDid = { remove: false, skip: false };
   const hostLoop = (async () => {
     const t0 = Date.now();
     while (Date.now() - t0 < 20 * 60_000) {
@@ -227,6 +280,20 @@ async function runGame(g: number) {
       if (v.phase === "ended") break;
       if (v.phase === "round" && v.round?.mode === "emoji" && v.round.hostHints.length < 2 && Date.now() % 7 === 0) {
         await req(`/api/rooms/${code}/host`, { body: { action: "dropHint" }, headers: H });
+      }
+      if (v.phase === "round" && v.round?.wwi) {
+        const w = v.round.wwi;
+        // Once per game: remove an upcoming answer, and skip one on screen.
+        if (!hostDid.remove && v.wwiUpcoming?.length > 1) {
+          hostDid.remove = true;
+          await req(`/api/rooms/${code}/host`, { body: { action: "removeAnswer", answerId: v.wwiUpcoming[1].id }, headers: H });
+        } else if (!hostDid.skip && w.stage === "guessing" && w.index === 2 && v.wwiCurrent) {
+          hostDid.skip = true;
+          await req(`/api/rooms/${code}/host`, { body: { action: "skipAnswer" }, headers: H });
+        } else if (w.stage === "answerReveal") {
+          await sleep(1500);
+          await req(`/api/rooms/${code}/host`, { body: { action: "next" }, headers: H });
+        }
       }
       if (v.phase === "reveal") {
         await sleep(800);
@@ -275,9 +342,9 @@ async function runGame(g: number) {
   const foreign = tvv.leaderboard.filter((e: { nickname: string }) => !e.nickname.startsWith(`G${g}P`));
   if (foreign.length) problems.push(`game ${code} sees players from another game: ${foreign.map((e: { nickname: string }) => e.nickname)}`);
   let modes = "";
-  if (oracleDb) modes = ((await oracleDb`select state->'history' as h from rooms where code = ${code}`)[0]?.h ?? []).map((h: { mode: string }) => (h.mode === "emoji" ? "E" : h.mode === "mlt" ? "M" : "H")).join("");
+  if (oracleDb) modes = ((await oracleDb`select state->'history' as h from rooms where code = ${code}`)[0]?.h ?? []).map((h: { mode: string }) => (h.mode === "emoji" ? "E" : h.mode === "mlt" ? "M" : h.mode === "wwi" ? "W" : "H")).join("");
   if (MODE === "mixed" && oracleDb) {
-    const letter = { hangman: "H", emoji: "E", mlt: "M" } as const;
+    const letter = { hangman: "H", emoji: "E", mlt: "M", wwi: "W" } as const;
     const expected = Array.from({ length: modes.length }, (_, i) => letter[MIXED[i % MIXED.length]]).join("");
     if (modes !== expected) problems.push(`mixed rounds should be ${expected} but were ${modes}`);
   }
@@ -298,7 +365,10 @@ async function main() {
   if (emojiStats.answers) console.log(`Emoji Decode: ${emojiStats.rounds.size} rounds · ${emojiStats.answers} answers · ${emojiStats.correct} correct`);
   if (mltStats.votes) console.log(`Most Likely To: ${mltStats.rounds.size} rounds · ${mltStats.votes} votes · responses carrying individual votes: ${mltStats.leaks}`);
   if (mltStats.leaks) console.log("  ✗ vote privacy: some responses contained individual votes");
-  let failed = stats.errors5xx > 0 || stats.unexpected4xx > 0 || mltStats.leaks > 0;
+  if (wwiStats.answers)
+    console.log(`Who Wrote It?: ${wwiStats.answers} answers · ${wwiStats.shown.size} shown · ${wwiStats.guesses} guesses · responses leaking an author or guess: ${wwiStats.leaks}`);
+  if (wwiStats.leaks) console.log("  ✗ anonymity: some responses contained a secret author, guesses or unshown answers");
+  let failed = stats.errors5xx > 0 || stats.unexpected4xx > 0 || mltStats.leaks > 0 || wwiStats.leaks > 0;
   await oracleDb?.end();
   for (const r of results) {
     console.log(`Game ${r.code}: ${r.rounds} rounds${r.modes ? ` (${r.modes})` : ""} · winner ${r.winner?.nickname} (${r.winner?.score}) · ${r.awards} awards · ${r.problems.length ? "PROBLEMS" : "scores match on server, phones, TV and host ✓"}`);

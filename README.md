@@ -3,11 +3,12 @@
 A neon game-show word-guessing party game for ~15 friends (up to 30).
 The **TV** shows a QR code, the puzzle and a live leaderboard. Everyone solves the **same puzzle at the same time on their own phone**. No accounts, no app installs, and a host can spin up a new game any time.
 
-Four game modes, one shared leaderboard:
+Five game modes, one shared leaderboard:
 
 - **🔤 Hangman** (default): guess letters. Each wrong letter pops one of your six neon balloons.
 - **😀 Emoji Decode**: the TV shows an emoji clue like 🦁👑, and you type the answer on your phone. You get 3 attempts.
 - **👑 Most Likely To**: the TV asks "Who is most likely to…?" and everyone secretly votes for a player. You score by reading the room. Needs 3+ players.
+- **🕵️ Who Wrote It?**: everyone anonymously answers a question on their phone, then guesses who wrote each answer shown on the TV. Fool your friends for points. Needs 4+ players.
 - **🔀 Mixed**: rotates through the modes you choose, one per round. By default it alternates Hangman and Emoji Decode, starting with Hangman.
 
 Built with **Next.js 16 (App Router) · TypeScript · Tailwind CSS 4 · Supabase (Postgres + Realtime) · Vercel**.
@@ -38,11 +39,11 @@ Having trouble? Jump to [Troubleshooting](#troubleshooting) or open `/api/health
 | --- | --- | --- |
 | Landing | `/` | Anyone: **Host a new game** or **Join with a code** |
 | Host Prep | `/host/CODE/prep#k=SECRET` | Host picks the **Game Mode** (and which modes Mixed includes) and sets up rounds, timers, categories or question packs, difficulty, content level, friend-written words, Dare Wheel, Inside Jokes, custom questions and custom dares, and reviews friend submissions |
-| Host Controls | `/host/CODE#k=SECRET` | Host's phone: Game Mode (in the lobby and after a game), Start, Next, Pause/Resume, Skip, **Drop Hint** (Emoji Decode), Skip question (Most Likely To), Remove player, Re-spin dare, End, Play Again. The host doesn't play. |
+| Host Controls | `/host/CODE#k=SECRET` | Host's phone: Game Mode (in the lobby and after a game), Start, Next, Pause/Resume, Skip, **Drop Hint** (Emoji Decode), Skip question (Most Likely To, Who Wrote It?), Skip answer / Remove upcoming answer (Who Wrote It?), Remove player, Re-spin dare, End, Play Again. The host doesn't play. |
 | TV Display | `/tv/CODE` | Laptop on HDMI at 1920×1080: QR lobby, puzzle, leaderboard + rival tracker, reactions, dare wheel, podium & awards, sound with mute, full-screen button |
-| Player Phone | `/play/CODE` | Join with a nickname. Hangman: on-screen keyboard (a physical keyboard works too) and hint. Emoji Decode: large answer box with a **Show clue** button. Both: power-ups and reactions. |
+| Player Phone | `/play/CODE` | Join with a nickname. Hangman: on-screen keyboard (a physical keyboard works too) and hint. Emoji Decode: large answer box with a **Show clue** button. Most Likely To: a big list of names. Who Wrote It?: a large answer box with a character count, then four big name buttons. All modes: power-ups and reactions. |
 
-Game-night features: Power-ups (Freeze a rival / Reveal a letter / Extra Life, 2 uses per game), Loser Picks, Double-Points Final, Sudden Death, Dare Wheel, Emoji Reactions, End-of-Night Awards (Speed Demon, Most Lives Lost, Hint Addict, Comeback Kid, Master Stumper, Emoji Whisperer), optional friend-written words, and a private **Inside Jokes** category.
+Game-night features: Power-ups (Freeze a rival / Reveal a letter / Extra Life, 2 uses per game), Loser Picks, Double-Points Final, Sudden Death, Dare Wheel, Emoji Reactions, End-of-Night Awards (Speed Demon, Most Lives Lost, Hint Addict, Comeback Kid, Master Stumper, Emoji Whisperer, Crowd Favorite, Mind Reader, Mastermind, Undercover Agent, Open Book), optional friend-written words, and a private **Inside Jokes** category.
 
 ---
 
@@ -220,6 +221,20 @@ q("start chaos in the group chat and then go to sleep", "pg13"), // only in PG-1
   - A list of off-limits topic words.
 - The bank is `server-only` and never ships to browsers.
 
+### Who Wrote It? questions: [`src/data/prompts.ts`](src/data/prompts.ts)
+
+One question per line, grouped by pack (Hypotheticals, College Life, Friend Group, Chaos, Funny Habits — the section it's in is its pack):
+
+```ts
+w("What would you name a pet rock?"),                      // Clean (default)
+w("What would be the most unhinged thing a smart fridge could say?", "pg13"), // only in PG-13 games
+```
+
+- Quick and playful: something anyone can answer in a few words.
+- No secrets, health, mental health, sexuality, gender, race, religion, immigration, money, body shape, trauma, relationships, crimes, or anything degrading.
+- `npm test` checks the file: 30+ questions per pack, no duplicates, 10–120 characters ending in "?", the content filter, and a list of off-limits topic words.
+- Hosts can also add their own questions on Host Prep (the **Host's Questions** pack). The bank is `server-only` and never ships to browsers.
+
 ### Starter dares: [`src/data/dares.ts`](src/data/dares.ts)
 
 Each `d("text", "clean" | "pg13")` entry is one dare. Keep dares **safe, consensual and optional**: no alcohol, nothing physically risky, nothing degrading. Hosts can also add custom dares on the Prep screen.
@@ -249,14 +264,16 @@ Late joiners start with 0 points from the next round. Phones that refresh or rec
 - Pick it at the top of **Host Prep → Game settings**, or with the **Game mode** picker on Host Controls in the lobby.
 - After a game ends you can switch modes, then tap **Play Again**. Settings can be changed in the lobby and on the game-over screen, but not mid-game.
 - The TV lobby and every phone show which mode is on.
-- Rounds, content level, friend-written rounds and the Dare Wheel apply to every mode. The round timer, categories and difficulty apply to the word modes (Hangman, Emoji Decode). The voting timer and question packs apply to Most Likely To. Host Prep only shows the settings for the modes you picked.
+- Rounds, content level, friend-written rounds and the Dare Wheel apply to every mode. The round timer, categories and difficulty apply to the word modes (Hangman, Emoji Decode). The voting timer and question packs apply to Most Likely To. The writing timer, guessing timer, answers per round and its own question packs apply to Who Wrote It?. Host Prep only shows the settings for the modes you picked.
+- Host Prep, Host Controls and the TV lobby show an **estimated game length** for the current settings.
 
 | Mode | What happens |
 | --- | --- |
 | 🔤 Hangman (default) | Unchanged from before: guess letters before your 6 balloons pop. |
 | 😀 Emoji Decode | Every round is an emoji clue. |
 | 👑 Most Likely To | Every round is a vote. Needs at least 3 players. |
-| 🔀 Mixed | Rotates through the modes ticked under **Include in Mixed** (at least two), one per round, in order: Hangman → Emoji Decode → Most Likely To. The default is Hangman + Emoji Decode, the original Mixed. Answers never repeat across Hangman and Emoji Decode. |
+| 🕵️ Who Wrote It? | Every round is a question to answer anonymously, then guess the writers. Needs at least 4 players. |
+| 🔀 Mixed | Rotates through the modes ticked under **Include in Mixed** (at least two), one per round, in order: Hangman → Emoji Decode → Most Likely To → Who Wrote It?. Most Likely To rounds are skipped while fewer than 3 players are in, Who Wrote It? rounds while fewer than 4. The default is Hangman + Emoji Decode, the original Mixed. Answers never repeat across Hangman and Emoji Decode. |
 
 **An Emoji Decode round:**
 1. The TV shows a big emoji clue, the category, the timer and how many players have answered. The leaderboard beside it shows each player's attempts left and whether they've solved it, but never their guesses.
@@ -348,6 +365,33 @@ Other rules:
   - Votes live only on the server. They never appear in client code, Realtime messages or API responses, and they're validated there: one vote per player per round, current options only, rate-limited.
   - Once a round is scored, the voter → vote record is deleted and only the totals are kept. Everything else is deleted with the room under the usual 24-hour cleanup.
 
+**A Who Wrote It? round:**
+1. **Writing.** The TV shows the question, the writing timer (30/45/60 s, default 45) and how many answers are in. Each player types one anonymous answer (up to 80 characters, with a live count) and taps **Lock in my answer**. It can't be changed once locked. Writing ends when the timer runs out or every player has answered.
+2. **Selection.** The server picks the host's number of answers (1/3/5, default 3), favoring players whose answers have been shown least. If fewer were written, all of them are shown; if nobody wrote anything, there are no points and the host moves on. A 5-second pause lets the host review the selected answers.
+3. **Guessing**, for each selected answer:
+   - The TV shows the answer, never the writer, plus how many players have guessed.
+   - Every other player gets four big name buttons (the writer plus three other players, never themselves) in their own random order, and taps one.
+   - The writer's phone says **"Your answer is on screen. Keep a straight face 😏"** — they don't guess on their own answer.
+   - When the guessing timer (10/15/20 s, default 15) runs out or everyone has guessed, the TV reveals the writer, how many guessed right and the updated scores. Phones show a celebration, **YOU SUCK 😂** (PG-13) / **YOU'RE OUT 😂** (Clean), or, for the writer, how many players their answer fooled.
+4. After the last answer the TV shows the round's answers with their writers and the leaderboard, then waits for **Next**.
+
+**Who Wrote It? details:**
+- **Host controls:** Host Controls lists the selected answers still to come (text only — even the host never sees who wrote one). The host can **Remove** one before it reaches the TV (another answer takes its place if one is available), **Skip** the answer on screen before its reveal (no points, writer stays secret, a replacement comes up), **Skip question** for the rest of the round, and tap **Next** to move on from a reveal early.
+- **Content:** answers go through the content filter when submitted, at the game's Clean / PG-13 level. Answers that weren't selected never appear on the TV or anyone else's phone and are deleted when the round ends.
+- **Custom questions:** add your own on Host Prep (10–120 characters, content-filtered). With friend-written rounds on, each player can submit one question in the lobby; you can review and remove them. They're used for about a third of the Who Wrote It? rounds, are always anonymous and earn no author points. Questions never repeat within a game.
+- **Players:**
+  - **4 players minimum.** A Who Wrote It?-only game won't start with fewer; if players leave, the next round is held and the host and TV say so until someone joins.
+  - **Late joiners** start with 0 points and play from the next question. They can appear as a name choice only after they've written an answer.
+  - **Removed players** can't write or guess. Their unrevealed answers are dropped (and replaced when possible).
+- **Existing features:**
+  - **Power-ups** (the same 2 per game): **Freeze** locks a rival's guess buttons for 5 s (not in the final 5 seconds; anyone can be frozen, even the writer, so a freeze never gives anything away), **Eliminate Two** removes two wrong names (always leaving at least two), **Double Guess** lets you pick two names. One boost per answer; power-ups spent on a skipped answer are refunded.
+  - **Loser Picks:** the lowest scorer picks the next question pack (or category, if the next round is a word round).
+  - **Dare Wheel:** unchanged.
+  - **Sudden Death:** games with word rounds keep their word tiebreak. In a Who Wrote It?-only game (or Mixed with only Most Likely To and Who Wrote It?), the non-tied players vote on the tied players without showing who voted for whom; a tie is settled at random.
+  - **Awards:** **Mastermind** (most correct guesses), **Undercover Agent** (fooled the most guesses), **Open Book** (whose answers were guessed correctly most often). Hidden when nobody qualifies.
+- **Anonymity:** the writer of an answer stays on the server until that answer's reveal. It never appears in client code, Realtime messages, API responses, choice order or the host's screen, and no screen ever shows who guessed whom — only totals. Who has written or guessed isn't shown either (it would hint at the writer); only counts are. Each guess is deleted as soon as the writer is revealed.
+- **Reliability:** the server is the source of truth: one answer per player per round, one guess per player per answer (two with Double Guess), both rate-limited. Refreshing restores the stage, question, answer on screen, timer, your answer status, your choices, power-ups and score.
+
 ### Emoji Decode scoring
 
 | Event | Points |
@@ -373,6 +417,17 @@ Scores can't go below 0, and both modes add to one shared leaderboard.
 
 Points are added when the round ends, so the leaderboard never hints at who is leading the vote.
 
+### Who Wrote It? scoring
+
+| Event | Points |
+| --- | --- |
+| You guessed the writer | **+100** |
+| Your answer fooled someone (per player who guessed wrong) | **+15** |
+| Wrong guess, missed guess, or writing your own answer | **0** |
+| Final round | doubled, as in the other modes |
+
+Points are added at each answer's reveal; scores never go below 0 and share the one leaderboard.
+
 ### Answer matching
 
 Answers are checked on the server:
@@ -394,8 +449,9 @@ Phones / TV / Host ──HTTPS──▶ Next.js API routes (Vercel) ──SQL (r
         └──── Supabase Realtime ◀───────┘  "room changed, seq=N" (no game data)
 ```
 
-- **No database migration for Emoji Decode or Most Likely To.** Room state is one JSONB document, so the new fields are just extra keys with defaults. Rooms saved by an older version are upgraded in memory when loaded (`upgradeState`), so existing data is never rewritten or lost. `supabase/migrations/0001_init.sql` is still the only migration, and votes are deleted with their room by the existing cleanup.
+- **No database migration for Emoji Decode, Most Likely To or Who Wrote It?.** Room state is one JSONB document, so the new fields are just extra keys with defaults. Rooms saved by an older version are upgraded in memory when loaded (`upgradeState`), so existing data is never rewritten or lost. `supabase/migrations/0001_init.sql` is still the only migration, and votes, answers and guesses are deleted with their room by the existing cleanup.
 - **Votes are secret by construction.** The voter → vote map lives only in server state. Views are built from totals, and the map is wiped as soon as a round is scored. A unit test plays the same round with different voters but identical totals and checks that every screen's data is byte-for-byte identical.
+- **Who Wrote It? authors are secret by construction.** Answers and guesses live only in server state; views carry the answer text and totals, never an author before its reveal. Unit tests swap who wrote the answer on screen (or whom a player guessed) and check that every other screen's data is identical; guesses are wiped at each reveal and unshown answers at the end of the round.
 - **The server is the source of truth.** All game state for a room is one JSONB document, changed only inside `SELECT … FOR UPDATE` transactions by a pure, unit-tested engine (`src/lib/game/engine.ts`). That covers rounds, guesses, timers, power-ups and scores.
 - **Timers without a long-running server.** The server stores deadlines. Expiry, Loser Picks timeouts and dare auto-spins are applied lazily on any request, and clients wake up at each deadline, so nothing waits on a background process. Pausing freezes the remaining time on the server.
 - **The answer never leaves the server early.** Clients only receive role-specific *views* (`src/lib/game/views.ts`):
@@ -451,8 +507,9 @@ npm run test:e2e
 
 # load test: 2 concurrent games × 15 players against a running server (Mixed mode by default)
 BASE_URL=http://localhost:3000 DATABASE_URL=postgres://... npm run load-test
-#   GAMES=2 PLAYERS=15 ROUNDS=5 MODE=mixed by default (MODE=hangman|emoji|mlt|mixed)
-#   MIXED=hangman,emoji,mlt sets the Mixed rotation; every response is scanned for individual votes
+#   GAMES=2 PLAYERS=15 ROUNDS=5 MODE=mixed by default (MODE=hangman|emoji|mlt|wwi|mixed)
+#   MIXED=hangman,emoji,mlt,wwi sets the Mixed rotation; every response is scanned for individual votes
+#   and for Who Wrote It? secrets (an author before its reveal, anyone's guesses, unshown answers)
 #   With DATABASE_URL, some bots peek at the current Emoji answer (test oracle) so correct answers are exercised too
 
 npm run check   # lint + typecheck + tests + production build
@@ -486,6 +543,11 @@ Scripts such as `db:migrate` and `load-test` read `.env.local` themselves, and v
 | **Most Likely To:** full Most Likely To game and a Mixed game (host, TV, multiple phones) | `tests/e2e/mlt.spec.ts` |
 | **Most Likely To:** 15 concurrent players, scores match on server, phones and TV, no vote leaks | `MODE=mlt npm run load-test` and `MODE=mixed MIXED=hangman,emoji,mlt npm run load-test` |
 | **Most Likely To:** dev tools / network can't reveal who voted for whom | unit "identical views" test, integration + e2e scans of every response, load-test scan |
+| **Who Wrote It?:** existing modes unchanged | all earlier Hangman, Emoji Decode, Most Likely To and Mixed tests pass unchanged |
+| **Who Wrote It?:** mode selection, answer selection, choice generation, author sit-outs, scoring, double points, power-ups, custom questions, host removal, late joining, player removal, anonymity | `tests/unit/wwi.test.ts`, `prompts.test.ts`, `estimate.test.ts` + `tests/integration/wwi-api.test.ts` |
+| **Who Wrote It?:** full Who Wrote It? game and a Mixed game (host, TV, 4 phones) | `tests/e2e/wwi.spec.ts` |
+| **Who Wrote It?:** 15 concurrent players, scores match on server, phones and TV | `MODE=wwi npm run load-test` and `MODE=mixed MIXED=hangman,emoji,mlt,wwi npm run load-test` |
+| **Who Wrote It?:** dev tools / network can't reveal an author or another player's guess before it's shown | unit "identical views" tests, integration + e2e scans of every response, load-test scan |
 
 Before game night, confirm:
 
