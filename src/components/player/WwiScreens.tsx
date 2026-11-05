@@ -221,7 +221,7 @@ function Guessing({ view, room, act, header }: { view: PlayerView; room: Room; a
         {mine.doubleGuess && !locked && (
           <p className="font-bold text-pink">✌️ Double Guess — {picked ? "pick one more name" : "pick two names"}</p>
         )}
-        {mine.eliminated && !locked && <p className="font-bold text-lime">✂️ Two wrong names removed</p>}
+        {mine.eliminated && !locked && <p className="font-bold text-lime">✂️ Wrong names removed — fewer to pick from</p>}
       </Panel>
 
       <div className="relative">
