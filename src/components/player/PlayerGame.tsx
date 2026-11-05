@@ -123,12 +123,18 @@ export function Reactions({ act }: { act: (b: Record<string, unknown>) => Promis
 function Lobby({ view, act }: { view: PlayerView; act: (b: Record<string, unknown>) => Promise<unknown> }) {
   const [answer, setAnswer] = useState("");
   const [hint, setHint] = useState("");
+  const [clue, setClue] = useState("");
   const sub = view.submission;
+  const needsClue = view.mode === "emoji";
+  const wantsClue = view.mode !== "hangman";
   return (
     <>
       <Panel className="text-center">
         <p className="font-display text-3xl font-black">You&apos;re in! 🎉</p>
         <p className="mt-2 text-mute">Eyes on the TV — the host will start soon.</p>
+        <p className="mt-2 font-bold text-cyan">
+          {view.mode === "emoji" ? "😀 Tonight: Emoji Decode" : view.mode === "mixed" ? "🔀 Tonight: Hangman + Emoji Decode" : "🔤 Tonight: Hangman"}
+        </p>
       </Panel>
       {view.friendWords && (
         <Panel className="flex flex-col gap-3">
@@ -143,16 +149,18 @@ function Lobby({ view, act }: { view: PlayerView; act: (b: Record<string, unknow
               </p>
               {sub && (
                 <p className="rounded-xl bg-stage px-3 py-2" role="status">
-                  Submitted: <strong>{sub.answer}</strong> {sub.hint && <span className="text-mute">({sub.hint})</span>}
+                  Submitted: {sub.clue && <span className="text-2xl">{sub.clue} </span>}
+                  <strong>{sub.answer}</strong> {sub.hint && <span className="text-mute">({sub.hint})</span>}
                 </p>
               )}
               <form
                 className="flex flex-col gap-2"
                 onSubmit={async (e) => {
                   e.preventDefault();
-                  if (await act({ action: "submitWord", answer, hint })) {
+                  if (await act({ action: "submitWord", answer, hint, ...(wantsClue && clue.trim() ? { clue } : {}) })) {
                     setAnswer("");
                     setHint("");
+                    setClue("");
                   }
                 }}
               >
@@ -164,7 +172,23 @@ function Lobby({ view, act }: { view: PlayerView; act: (b: Record<string, unknow
                   Hint (optional)
                 </label>
                 <input id="fh" value={hint} maxLength={60} onChange={(e) => setHint(e.target.value)} className="min-h-12 rounded-xl border-2 border-line bg-stage px-3" />
-                <Button type="submit" variant="pink" disabled={answer.trim().length < 2}>
+                {wantsClue && (
+                  <>
+                    <label htmlFor="fc" className="text-sm font-bold">
+                      Emoji clue for Emoji Decode {needsClue ? "(required — emojis only)" : "(optional — emojis only)"}
+                    </label>
+                    <input
+                      id="fc"
+                      value={clue}
+                      maxLength={80}
+                      onChange={(e) => setClue(e.target.value)}
+                      placeholder="⛴️🇵🇹🤢"
+                      className="min-h-12 rounded-xl border-2 border-line bg-stage px-3 text-2xl"
+                    />
+                    {!needsClue && <p className="text-xs text-mute">Without a clue, your word is only used in Hangman rounds.</p>}
+                  </>
+                )}
+                <Button type="submit" variant="pink" disabled={answer.trim().length < 2 || (needsClue && !clue.trim())}>
                   {sub ? "Replace my word" : "Submit my word"}
                 </Button>
               </form>
@@ -196,6 +220,7 @@ function RoundScreen({ view, room, act }: { view: PlayerView; room: Room; act: (
     </Panel>
   );
 
+  if (my.state === "playing" && r.mode === "emoji") return <EmojiPlaying view={view} room={room} act={act} header={header} />;
   if (my.state === "playing") return <Playing view={view} room={room} act={act} header={header} />;
 
   if (my.state === "solved")
@@ -282,7 +307,9 @@ function OutScreen({ view, header, act }: { view: PlayerView; header: React.Reac
         <p className="font-display neon-text mt-4 text-5xl font-black text-pink" role="status">
           {pg ? "YOU SUCK 😂" : "YOU'RE OUT 😂"}
         </p>
-        <p className="mt-3 text-mute">All your balloons popped. The answer is revealed when the round ends.</p>
+        <p className="mt-3 text-mute">
+          {view.round?.mode === "emoji" ? "No attempts left." : "All your balloons popped."} The answer is revealed when the round ends.
+        </p>
       </Panel>
       <Panel>
         <Reactions act={act} />
@@ -405,6 +432,179 @@ function Playing({ view, room, act, header }: { view: PlayerView; room: Room; ac
 }
 
 // ---------------------------------------------------------------------------
+// Emoji Decode
+// ---------------------------------------------------------------------------
+function AttemptsLeft({ left, max }: { left: number; max: number }) {
+  return (
+    <div className="flex items-center justify-center gap-2" role="img" aria-label={`${left} ${left === 1 ? "attempt" : "attempts"} left`}>
+      {Array.from({ length: Math.max(max, left) }, (_, i) => (
+        <span key={i} aria-hidden className={`text-3xl ${i < left ? "" : "opacity-25 grayscale"}`}>
+          🎯
+        </span>
+      ))}
+    </div>
+  );
+}
+
+function ordinal(n: number) {
+  const s = ["th", "st", "nd", "rd"];
+  const v = n % 100;
+  return n + (s[(v - 20) % 10] || s[v] || s[0]);
+}
+
+function EmojiPlaying({ view, room, act, header }: { view: PlayerView; room: Room; act: (b: Record<string, unknown>) => Promise<unknown>; header: React.ReactNode }) {
+  const my = view.my!;
+  const r = view.round!;
+  const now = useTicker(250, room.serverNow);
+  const frozenMs = Math.max(0, my.frozenUntil - now);
+  const remaining = useRemaining(r.timer, room.serverNow);
+  const [text, setText] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [feedback, setFeedback] = useState<string | null>(null);
+  const [shake, setShake] = useState(0);
+  const [showClue, setShowClue] = useState(false);
+  const [freezePicker, setFreezePicker] = useState(false);
+  const sd = r.kind === "suddenDeath";
+  const disabled = view.paused || frozenMs > 0 || remaining <= 0;
+
+  async function submit(e: React.FormEvent) {
+    e.preventDefault();
+    if (!text.trim() || disabled || busy) return;
+    setBusy(true);
+    const res = (await act({ action: "answer", answer: text })) as { correct?: boolean | null; attemptsLeft?: number | null } | null;
+    setBusy(false);
+    if (res && res.correct === false) {
+      setShake((n) => n + 1);
+      const left = res.attemptsLeft ?? 0;
+      setFeedback(left > 0 ? `❌ Not quite — ${left} ${left === 1 ? "attempt" : "attempts"} left` : "❌ Not quite");
+      setText("");
+    } else if (res && res.correct) {
+      setFeedback(null);
+    }
+  }
+
+  return (
+    <>
+      {header}
+      <Panel className="flex flex-col items-center gap-3 py-4 text-center">
+        <p className="font-display text-xl font-bold">👀 Decode the emojis on the TV</p>
+        <Button variant="ghost" aria-expanded={showClue} aria-controls="clue" onClick={() => setShowClue((v) => !v)}>
+          {showClue ? "Hide clue" : "Show clue"}
+        </Button>
+        {showClue && r.clue && (
+          <p id="clue" className="text-6xl leading-tight break-all" role="img" aria-label={`Emoji clue: ${r.clue}`}>
+            {r.clue}
+          </p>
+        )}
+        {r.hostHints.length > 0 && (
+          <ul className="flex flex-col gap-1" aria-label="Hints from the host">
+            {r.hostHints.map((h) => (
+              <li key={h} className="rounded-xl bg-stage px-3 py-1 font-bold text-yellow">
+                💡 {h}
+              </li>
+            ))}
+          </ul>
+        )}
+        {my.revealedLetters.length > 0 && (
+          <ul className="flex flex-col gap-1" aria-label="Letters revealed to you">
+            {my.revealedLetters.map((l) => (
+              <li key={l.position} className="rounded-xl bg-stage px-3 py-1 font-bold text-lime">
+                🔦 The {ordinal(l.position + 1)} letter is “{l.letter}”
+              </li>
+            ))}
+          </ul>
+        )}
+        <AttemptsLeft left={my.lives} max={my.maxAttempts} />
+      </Panel>
+
+      <form onSubmit={submit} className="relative flex flex-col gap-2">
+        <label htmlFor="emoji-answer" className="sr-only">
+          Your answer
+        </label>
+        <div key={shake} className={shake ? "animate-shake" : ""}>
+          <input
+            id="emoji-answer"
+            value={text}
+            onChange={(e) => setText(e.target.value)}
+            maxLength={60}
+            autoComplete="off"
+            autoCorrect="off"
+            autoCapitalize="off"
+            spellCheck={false}
+            enterKeyHint="send"
+            placeholder="Type your answer…"
+            disabled={disabled}
+            aria-describedby="emoji-feedback"
+            className="font-display h-20 w-full rounded-2xl border-4 border-cyan bg-stage px-4 text-center text-3xl font-bold text-ink placeholder:text-line disabled:opacity-60"
+          />
+        </div>
+        <Button big variant="pink" type="submit" disabled={disabled || busy || !text.trim()}>
+          {busy ? "Checking…" : "Submit answer"}
+        </Button>
+        <p id="emoji-feedback" role="status" aria-live="assertive" className="min-h-6 text-center font-bold text-red">
+          {feedback}
+        </p>
+        {frozenMs > 0 && (
+          <div className="absolute inset-0 flex items-center justify-center rounded-2xl bg-cyan/85 text-center" role="alert">
+            <p className="font-display text-3xl font-black text-stage">❄️ FROZEN {Math.ceil(frozenMs / 1000)}s</p>
+          </div>
+        )}
+        {view.paused && (
+          <div className="absolute inset-0 flex items-center justify-center rounded-2xl bg-stage/90" role="status">
+            <p className="font-display text-3xl font-black">⏸ Paused</p>
+          </div>
+        )}
+      </form>
+      {my.wrong.length > 0 && <p className="text-center text-sm text-mute">Tried: {my.wrong.join(" · ")}</p>}
+
+      {!sd && (
+        <div className="grid grid-cols-2 gap-2">
+          <div className="col-span-2 text-center text-sm text-mute" aria-label={`${view.me.powerupsLeft} power-ups left this game`}>
+            ⚡ Power-ups left: <strong className="text-ink">{view.me.powerupsLeft}</strong>
+          </div>
+          <Button variant="primary" disabled={disabled || view.me.powerupsLeft <= 0 || my.freezeTargets.length === 0} onClick={() => setFreezePicker(true)}>
+            ❄️ Freeze rival
+          </Button>
+          <Button variant="lime" disabled={disabled || view.me.powerupsLeft <= 0} onClick={() => act({ action: "powerup", type: "reveal" })}>
+            🔦 Reveal a letter
+          </Button>
+          <Button variant="yellow" className="col-span-2" disabled={disabled || view.me.powerupsLeft <= 0} onClick={() => act({ action: "powerup", type: "extraLife" })}>
+            🎯 Extra attempt
+          </Button>
+        </div>
+      )}
+
+      {freezePicker && (
+        <div className="fixed inset-0 z-40 flex items-end bg-stage/80" role="dialog" aria-modal="true" aria-labelledby="efreeze-title">
+          <Panel className="mx-auto mb-4 flex w-[calc(100%-1.5rem)] max-w-md flex-col gap-2">
+            <h2 id="efreeze-title" className="font-display text-xl font-bold">
+              Freeze whose answer box for 5s?
+            </h2>
+            <div className="grid max-h-[50dvh] grid-cols-2 gap-2 overflow-y-auto">
+              {my.freezeTargets.map((t) => (
+                <Button
+                  key={t.id}
+                  variant="primary"
+                  onClick={async () => {
+                    setFreezePicker(false);
+                    await act({ action: "powerup", type: "freeze", targetId: t.id });
+                  }}
+                >
+                  {t.nickname}
+                </Button>
+              ))}
+            </div>
+            <Button variant="ghost" onClick={() => setFreezePicker(false)} autoFocus>
+              Cancel
+            </Button>
+          </Panel>
+        </div>
+      )}
+    </>
+  );
+}
+
+// ---------------------------------------------------------------------------
 function RevealScreen({ view, act }: { view: PlayerView; act: (b: Record<string, unknown>) => Promise<unknown> }) {
   const rv = view.reveal!;
   const my = view.my;
@@ -430,6 +630,11 @@ function RevealScreen({ view, act }: { view: PlayerView; act: (b: Record<string,
             <p className="font-display text-4xl font-black text-lime">
               {my && my.points > 0 ? `+${my.points}` : my?.points ?? 0}
             </p>
+            {rv.mode === "emoji" && !rv.skipped && (
+              <p className="text-sm text-mute">
+                {rv.solvedCount} of {rv.totalPlayers} got it{rv.fastest ? ` · ⚡ fastest: ${rv.fastest.nickname}` : ""}
+              </p>
+            )}
             <p className="text-mute">points this round</p>
             <p className="mt-2 text-xl">
               You&apos;re <strong className="text-yellow">#{view.me.rank}</strong> overall

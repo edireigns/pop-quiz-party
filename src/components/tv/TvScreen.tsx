@@ -59,6 +59,7 @@ export function TvLobby({ view }: { view: TvView }) {
         <h2 className="font-display text-[2.6vw] font-black">
           <span className="text-pink">{players.length}</span> {players.length === 1 ? "player" : "players"} ready
         </h2>
+        <p className="font-display text-[1.8vw] font-bold text-cyan">Game mode: {MODE_NAMES[view.mode ?? "hangman"]}</p>
         {view.lobby?.friendWords && (
           <p className="text-[1.5vw] text-mute">🤝 Friend-written words are ON — submit yours on your phone! ({view.lobby.submissions} in)</p>
         )}
@@ -106,6 +107,54 @@ function useSplash(key: string | null, ms = 3200) {
   return shown;
 }
 
+const MODE_NAMES = { hangman: "🔤 Hangman", emoji: "😀 Emoji Decode", mixed: "🔀 Mixed (Hangman ⇄ Emoji Decode)" } as const;
+
+/** Emoji Decode on the TV: huge clue, host hints, answered count; at reveal the answer and stats. */
+function EmojiClue({ view, revealing }: { view: TvView; revealing: boolean }) {
+  const r = view.round!;
+  const rv = view.reveal;
+  return (
+    <div className="flex w-full flex-col items-center gap-[1.6vw] text-center text-ink">
+      <p
+        className={`leading-none drop-shadow-[0_0_24px_rgba(177,140,255,0.55)] ${revealing ? "text-[min(7vw,16vh)]" : "text-[min(11vw,26vh)]"}`}
+        role="img"
+        aria-label={`Emoji clue: ${r.clue ?? ""}`}
+      >
+        {r.clue}
+      </p>
+      {r.hostHints.length > 0 && (
+        <ul className="flex flex-wrap justify-center gap-[1vw]" aria-label="Hints">
+          {r.hostHints.map((h) => (
+            <li key={h} className="animate-pop-in rounded-full border-2 border-yellow bg-stage/80 px-[1.4vw] py-[0.4vw] text-[1.8vw] font-bold text-yellow">
+              💡 {h}
+            </li>
+          ))}
+        </ul>
+      )}
+      {!revealing && (
+        <p className="font-display text-[2.4vw] font-black" aria-live="polite">
+          <span className="text-cyan">{r.answered.done}</span> of {r.answered.total} answered
+        </p>
+      )}
+      {revealing && rv && (
+        <div className="animate-pop-in flex flex-col items-center gap-[0.8vw]">
+          <p className="text-[1.6vw] font-bold tracking-widest text-mute uppercase">The answer was</p>
+          <p className="font-display neon-text text-[4.6vw] leading-tight font-black text-yellow">{rv.answer}</p>
+          {!rv.skipped && <p className="text-[2vw]">
+            <strong className="text-lime">{rv.solvedCount}</strong> of {rv.totalPlayers} got it
+            {rv.fastest && (
+              <>
+                {" "}
+                · ⚡ Fastest: <strong className="text-pink">{rv.fastest.nickname}</strong> ({(rv.fastest.ms / 1000).toFixed(1)}s)
+              </>
+            )}
+          </p>}
+        </div>
+      )}
+    </div>
+  );
+}
+
 function RoundStage({ view, room }: { view: TvView; room: Room }) {
   const r = view.round!;
   const revealing = view.phase === "reveal" || !!view.reveal;
@@ -129,11 +178,13 @@ function RoundStage({ view, room }: { view: TvView; room: Room }) {
             ) : (
               `Round ${r.number} of ${view.totalRounds}`
             )}
+            {view.mode === "mixed" && <span className="ml-[0.8vw]">· {r.mode === "emoji" ? "😀 Emoji Decode" : "🔤 Hangman"}</span>}
           </p>
         </div>
         {!revealing && <Timer timer={r.timer} serverNow={room.serverNow} size="tv" />}
         <div className="neon-box flex flex-1 flex-col items-center justify-center gap-[2vw] rounded-[2vw] border-4 border-violet bg-panel/70 p-[2vw] text-violet">
           {view.pattern && <Pattern cells={view.pattern} variant="tv" reveal={revealing} />}
+          {r.mode === "emoji" && <EmojiClue view={view} revealing={revealing} />}
           {revealing && rv && (
             <div className="animate-pop-in text-center text-ink">
               {rv.skipped && <p className="text-[2vw] font-bold text-orange">Skipped — no points this round</p>}
@@ -155,10 +206,12 @@ function RoundStage({ view, room }: { view: TvView; room: Room }) {
       <section className="flex min-h-0 flex-col gap-[0.8vw]" aria-label="Leaderboard and rival tracker">
         <h2 className="font-display flex justify-between text-[1.6vw] font-black">
           <span>Leaderboard</span>
-          {!revealing && <span className="text-[1.1vw] font-normal text-mute">balloons · % solved</span>}
+          {!revealing && (
+            <span className="text-[1.1vw] font-normal text-mute">{r.mode === "emoji" ? "attempts left" : "balloons · % solved"}</span>
+          )}
         </h2>
         <div className="min-h-0 flex-1">
-          <TvLeaderboard entries={view.leaderboard} rivals={view.rivals} showRound={!sd} showRivals={!revealing} />
+          <TvLeaderboard entries={view.leaderboard} rivals={view.rivals} showRound={!sd} showRivals={!revealing} mode={r.mode} />
         </div>
       </section>
       {view.paused && <Splash text="PAUSED" sub="The host will be right back" tone="text-cyan" />}

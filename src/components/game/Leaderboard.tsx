@@ -49,6 +49,21 @@ function MiniLives({ lives }: { lives: number }) {
   );
 }
 
+/** Emoji Decode: attempts left as target pips (never the guesses). */
+function AttemptPips({ left }: { left: number }) {
+  const shown = Math.min(left, 5);
+  return (
+    <span className="flex items-center gap-[0.2em]" aria-label={`${left} attempts left`}>
+      {Array.from({ length: Math.max(3, shown) }, (_, i) => (
+        <span
+          key={i}
+          className={`inline-block h-[0.8em] w-[0.8em] rounded-full border-2 ${i < shown ? "border-cyan bg-cyan shadow-[0_0_6px_#33e6ff]" : "border-line"}`}
+        />
+      ))}
+    </span>
+  );
+}
+
 /**
  * TV leaderboard merged with the live rival tracker: rank, name, score,
  * round points, balloons left and % solved (never the guesses themselves).
@@ -59,11 +74,13 @@ export function TvLeaderboard({
   rivals,
   showRound,
   showRivals,
+  mode = "hangman",
 }: {
   entries: LeaderEntry[];
   rivals: RivalEntry[];
   showRound: boolean;
   showRivals: boolean;
+  mode?: "hangman" | "emoji";
 }) {
   const ref = useFlip(entries.map((e) => e.id));
   const rivalMap = new Map(rivals.map((r) => [r.id, r]));
@@ -100,6 +117,11 @@ export function TvLeaderboard({
                   <span className="font-bold text-red">💥 out</span>
                 ) : r.status === "waiting" ? (
                   <span className="text-mute">next round</span>
+                ) : mode === "emoji" ? (
+                  <>
+                    <AttemptPips left={r.lives} />
+                    <span className="w-[5.5em] text-mute">answering…</span>
+                  </>
                 ) : (
                   <>
                     <MiniLives lives={r.lives} />

@@ -54,6 +54,7 @@ export default function HostPrep() {
   const host = useHost(code);
   const { view, status, errorMessage, run, toast, token } = host;
   const [joke, setJoke] = useState({ answer: "", hint: "" });
+  const [clueForm, setClueForm] = useState({ clue: "", answer: "", alternates: "" });
   const [dare, setDare] = useState("");
 
   if (token === null)
@@ -62,7 +63,9 @@ export default function HostPrep() {
   if (!view || status === "notFound" || status === "unauthorized") return gate;
 
   const s = view.settings;
-  const locked = view.phase !== "lobby";
+  // Settings can be changed in the lobby and after a game ends (before Play Again).
+  const locked = view.phase !== "lobby" && view.phase !== "ended";
+  const mode = s.mode ?? "hangman";
   const base = siteUrl();
   const joinUrl = `${base}/play/${view.code}`;
   const tvUrl = `${base}/tv/${view.code}`;
@@ -98,6 +101,11 @@ export default function HostPrep() {
             The game is running — settings are locked. Use Host Controls to run it.
           </p>
         )}
+        {view.phase === "ended" && (
+          <p role="status" className="rounded-2xl bg-cyan px-4 py-3 font-bold text-stage">
+            Game over — change any settings (including the game mode), then tap Play Again in Host Controls.
+          </p>
+        )}
 
         <Panel className="flex flex-col gap-4">
           <h2 className="font-display text-xl font-bold">1. Links</h2>
@@ -115,6 +123,24 @@ export default function HostPrep() {
 
         <Panel className="flex flex-col gap-5">
           <h2 className="font-display text-xl font-bold">2. Game settings</h2>
+          <div className="flex flex-col gap-2">
+            <Segmented
+              label="Game mode"
+              value={mode}
+              disabled={locked}
+              options={[
+                { value: "hangman", label: "🔤 Hangman" },
+                { value: "emoji", label: "😀 Emoji Decode" },
+                { value: "mixed", label: "🔀 Mixed" },
+              ]}
+              onChange={(v) => set({ mode: v })}
+            />
+            <p className="text-sm text-mute">
+              {mode === "hangman" && "Classic: solve the word letter by letter before your 6 balloons pop."}
+              {mode === "emoji" && "The TV shows an emoji clue — type the answer on your phone. 3 attempts per round."}
+              {mode === "mixed" && "Alternates every round: Hangman, then Emoji Decode, and so on. One shared leaderboard."}
+            </p>
+          </div>
           <Segmented
             label="Rounds"
             value={s.rounds}
@@ -132,7 +158,7 @@ export default function HostPrep() {
           <fieldset disabled={locked}>
             <legend className="mb-2 font-bold">Categories</legend>
             <div className="flex flex-wrap gap-2">
-              {ALL_CATS.filter((c) => c !== "inside" || view.insideJokeCount > 0).map((c) => {
+              {ALL_CATS.filter((c) => c !== "inside" || view.insideJokeCount + (view.insideClueCount ?? 0) > 0).map((c) => {
                 const on = s.categories.includes(c);
                 return (
                   <button
@@ -174,7 +200,11 @@ export default function HostPrep() {
           />
           <Toggle
             label="Friend-written words"
-            description="Each player can submit one word in the lobby. Used for about a third of the rounds."
+            description={
+              mode === "hangman"
+                ? "Each player can submit one word in the lobby. Used for about a third of the rounds."
+                : "Each player submits one word plus an emoji clue for it. Used for about a third of the rounds."
+            }
             checked={s.friendWords}
             disabled={locked}
             onChange={(v) => set({ friendWords: v })}
@@ -202,9 +232,12 @@ export default function HostPrep() {
             3. <span aria-hidden>🤫</span> Inside Jokes <span className="text-base font-normal text-mute">(optional private category)</span>
           </h2>
           {view.insideJokes === null ? (
-            <p className="text-mute">{view.insideJokeCount} inside jokes are locked in for this game.</p>
-          ) : (
+            <p className="text-mute">
+              {view.insideJokeCount} words and {view.insideClueCount ?? 0} emoji clues are locked in for this game.
+            </p>
+          ) : mode === "emoji" ? null : (
             <>
+              {mode === "mixed" && <h3 className="font-bold">For Hangman rounds</h3>}
               <form
                 className="grid gap-2 sm:grid-cols-[1fr_1fr_auto]"
                 onSubmit={async (e) => {
@@ -248,6 +281,70 @@ export default function HostPrep() {
                         {j.hint && <span className="text-mute"> — {j.hint}</span>}
                       </span>
                       <Button variant="ghost" aria-label={`Remove ${j.answer}`} onClick={() => run({ action: "removeInsideJoke", id: j.id })}>
+                        ✕
+                      </Button>
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </>
+          )}
+          {view.insideClues && mode !== "hangman" && (
+            <>
+              {mode === "mixed" && <h3 className="mt-2 font-bold">For Emoji Decode rounds</h3>}
+              <form
+                className="grid gap-2 sm:grid-cols-2"
+                onSubmit={async (e) => {
+                  e.preventDefault();
+                  if (await run({ action: "addInsideClue", ...clueForm }, "Emoji clue added")) setClueForm({ clue: "", answer: "", alternates: "" });
+                }}
+              >
+                <label className="flex flex-col gap-1 text-sm font-bold" htmlFor="ic-clue">
+                  Emoji clue (emojis only)
+                  <input
+                    id="ic-clue"
+                    value={clueForm.clue}
+                    maxLength={80}
+                    onChange={(e) => setClueForm({ ...clueForm, clue: e.target.value })}
+                    placeholder="🌮🌧️😭"
+                    className="min-h-12 rounded-xl border-2 border-line bg-stage px-3 text-2xl font-normal"
+                  />
+                </label>
+                <label className="flex flex-col gap-1 text-sm font-bold" htmlFor="ic-answer">
+                  Answer
+                  <input
+                    id="ic-answer"
+                    value={clueForm.answer}
+                    maxLength={40}
+                    onChange={(e) => setClueForm({ ...clueForm, answer: e.target.value })}
+                    placeholder="Taco Tuesday Fiasco"
+                    className="min-h-12 rounded-xl border-2 border-line bg-stage px-3 font-normal"
+                  />
+                </label>
+                <label className="flex flex-col gap-1 text-sm font-bold sm:col-span-2" htmlFor="ic-alts">
+                  Also accept (optional, comma-separated)
+                  <input
+                    id="ic-alts"
+                    value={clueForm.alternates}
+                    maxLength={200}
+                    onChange={(e) => setClueForm({ ...clueForm, alternates: e.target.value })}
+                    placeholder="Taco fiasco, The taco night"
+                    className="min-h-12 rounded-xl border-2 border-line bg-stage px-3 font-normal"
+                  />
+                </label>
+                <Button type="submit" className="sm:col-span-2" disabled={!clueForm.clue.trim() || clueForm.answer.trim().length < 2}>
+                  Add emoji clue
+                </Button>
+              </form>
+              {view.insideClues.length > 0 && (
+                <ul className="flex flex-col gap-2">
+                  {view.insideClues.map((j) => (
+                    <li key={j.id} className="flex items-center justify-between gap-2 rounded-xl bg-stage px-3 py-2">
+                      <span className="min-w-0 break-words">
+                        <span className="text-2xl">{j.clue}</span> → <strong>{j.answer}</strong>
+                        {j.alternates.length > 0 && <span className="text-mute"> (also: {j.alternates.join(", ")})</span>}
+                      </span>
+                      <Button variant="ghost" aria-label={`Remove emoji clue for ${j.answer}`} onClick={() => run({ action: "removeInsideClue", id: j.id })}>
                         ✕
                       </Button>
                     </li>
@@ -314,6 +411,7 @@ export default function HostPrep() {
                 {view.submissions.map((x) => (
                   <li key={x.id} className="flex items-center justify-between gap-2 rounded-xl bg-stage px-3 py-2">
                     <span className="min-w-0 break-words">
+                      {x.clue && <span className="mr-1 text-2xl">{x.clue}</span>}
                       <strong>{x.answer}</strong>
                       {x.hint && <span className="text-mute"> — {x.hint}</span>}
                       <span className="block text-sm text-mute">by {x.nickname}</span>

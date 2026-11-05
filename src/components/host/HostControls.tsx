@@ -2,10 +2,14 @@
 
 import Link from "next/link";
 import { Timer } from "@/components/game/Timer";
+import { Segmented } from "@/components/Segmented";
 import { Button, ConnectionBanner, Logo, Panel, RoomGate, Stage, Toast } from "@/components/ui";
 import { siteUrl } from "@/lib/client/storage";
 import { useTicker } from "@/lib/client/useRoom";
 import type { HostView } from "@/lib/game/views";
+import type { GameMode } from "@/lib/game/types";
+
+export const MODE_LABEL: Record<GameMode, string> = { hangman: "🔤 Hangman", emoji: "😀 Emoji Decode", mixed: "🔀 Mixed" };
 import { useHost } from "./useHost";
 
 const PHASE_LABEL: Record<HostView["phase"], string> = {
@@ -64,8 +68,20 @@ export function HostControls({ code }: { code: string }) {
           {r && view.phase !== "lobby" && view.phase !== "ended" && (
             <p className="text-mute">
               {r.kind === "suddenDeath" ? `Sudden Death #${r.sdAttempt}` : `Round ${r.number} of ${view.totalRounds}`}
-              {r.kind === "final" && " · 2× FINAL"} · {r.categoryEmoji} {r.category}
+              {r.kind === "final" && " · 2× FINAL"} · {r.mode === "emoji" ? "😀 Emoji Decode" : "🔤 Hangman"} · {r.categoryEmoji} {r.category}
             </p>
+          )}
+          {view.phase === "round" && r?.mode === "emoji" && r.clue && (
+            <p className="text-4xl" role="img" aria-label={`Emoji clue ${r.clue}`}>
+              {r.clue}
+            </p>
+          )}
+          {view.phase === "round" && r && r.hostHints.length > 0 && (
+            <ul className="text-sm">
+              {r.hostHints.map((h) => (
+                <li key={h}>💡 {h}</li>
+              ))}
+            </ul>
           )}
           {view.phase === "round" && r && <Timer timer={r.timer} serverNow={host.serverNow} />}
           {view.progress && (
@@ -85,6 +101,16 @@ export function HostControls({ code }: { code: string }) {
         </Panel>
 
         <div className="grid grid-cols-2 gap-3">
+          {(view.phase === "lobby" || view.phase === "ended") && (
+            <div className="col-span-2 rounded-3xl border-2 border-line bg-panel/85 p-4">
+              <Segmented
+                label="Game mode"
+                value={view.settings.mode ?? "hangman"}
+                options={(["hangman", "emoji", "mixed"] as const).map((m) => ({ value: m, label: MODE_LABEL[m] }))}
+                onChange={(m) => void run({ action: "updateSettings", settings: { mode: m } })}
+              />
+            </div>
+          )}
           {view.phase === "lobby" && (
             <Button big variant="lime" className="col-span-2" onClick={busyGuard({ action: "start" })} disabled={view.players.length === 0}>
               ▶ Start game
@@ -103,6 +129,22 @@ export function HostControls({ code }: { code: string }) {
           {view.phase === "round" && (
             <Button big variant="ghost" onClick={busyGuard({ action: "skip" }, "Skip this word? Nobody gets points for it.")}>
               ⏭ Skip word
+            </Button>
+          )}
+          {view.phase === "round" && r?.mode === "emoji" && (
+            <Button
+              variant="yellow"
+              className="col-span-2"
+              disabled={r.hostHints.length >= 2}
+              onClick={busyGuard(
+                { action: "dropHint" },
+                "Drop a hint for everyone? Each hint takes 25 points off the maximum for anyone who hasn't answered yet.",
+              )}
+            >
+              💡{" "}
+              {r.hostHints.length >= 2
+                ? "Both hints dropped"
+                : `Drop hint ${r.hostHints.length + 1}/2: ${r.hostHints.length === 0 ? "first letter" : "word & letter count"}`}
             </Button>
           )}
           {(view.phase === "reveal" || view.phase === "loserPick" || view.phase === "dare") && (
@@ -138,7 +180,15 @@ export function HostControls({ code }: { code: string }) {
                     #{p.rank} {p.nickname}
                     {rival && view.phase === "round" && (
                       <span className="ml-2 text-sm text-mute">
-                        {rival.status === "solved" ? "✓" : rival.status === "out" ? "💥" : rival.status === "waiting" ? "next round" : `${rival.pct}%`}
+                        {rival.status === "solved"
+                          ? "✓"
+                          : rival.status === "out"
+                            ? "💥"
+                            : rival.status === "waiting"
+                              ? "next round"
+                              : r?.mode === "emoji"
+                                ? `🎯×${rival.lives}`
+                                : `${rival.pct}%`}
                       </span>
                     )}
                   </span>
