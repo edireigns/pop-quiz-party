@@ -3,11 +3,12 @@
 A neon game-show word-guessing party game for ~15 friends (up to 30).
 The **TV** shows a QR code, the puzzle and a live leaderboard. Everyone solves the **same puzzle at the same time on their own phone**. No accounts, no app installs, and a host can spin up a new game any time.
 
-Three game modes, one shared leaderboard:
+Four game modes, one shared leaderboard:
 
 - **🔤 Hangman** (default): guess letters. Each wrong letter pops one of your six neon balloons.
 - **😀 Emoji Decode**: the TV shows an emoji clue like 🦁👑, and you type the answer on your phone. You get 3 attempts.
-- **🔀 Mixed**: alternates Hangman and Emoji Decode every round, starting with Hangman.
+- **👑 Most Likely To**: the TV asks "Who is most likely to…?" and everyone secretly votes for a player. You score by reading the room. Needs 3+ players.
+- **🔀 Mixed**: rotates through the modes you choose, one per round. By default it alternates Hangman and Emoji Decode, starting with Hangman.
 
 Built with **Next.js 16 (App Router) · TypeScript · Tailwind CSS 4 · Supabase (Postgres + Realtime) · Vercel**.
 
@@ -36,8 +37,8 @@ Having trouble? Jump to [Troubleshooting](#troubleshooting) or open `/api/health
 | Screen | URL | Who |
 | --- | --- | --- |
 | Landing | `/` | Anyone: **Host a new game** or **Join with a code** |
-| Host Prep | `/host/CODE/prep#k=SECRET` | Host picks the **Game Mode** and sets up rounds, timer, categories, difficulty, content level, friend-written words, Dare Wheel, Inside Jokes and custom dares, and reviews friend submissions |
-| Host Controls | `/host/CODE#k=SECRET` | Host's phone: Game Mode (in the lobby and after a game), Start, Next, Pause/Resume, Skip, **Drop Hint** (Emoji Decode), Remove player, Re-spin dare, End, Play Again. The host doesn't play. |
+| Host Prep | `/host/CODE/prep#k=SECRET` | Host picks the **Game Mode** (and which modes Mixed includes) and sets up rounds, timers, categories or question packs, difficulty, content level, friend-written words, Dare Wheel, Inside Jokes, custom questions and custom dares, and reviews friend submissions |
+| Host Controls | `/host/CODE#k=SECRET` | Host's phone: Game Mode (in the lobby and after a game), Start, Next, Pause/Resume, Skip, **Drop Hint** (Emoji Decode), Skip question (Most Likely To), Remove player, Re-spin dare, End, Play Again. The host doesn't play. |
 | TV Display | `/tv/CODE` | Laptop on HDMI at 1920×1080: QR lobby, puzzle, leaderboard + rival tracker, reactions, dare wheel, podium & awards, sound with mute, full-screen button |
 | Player Phone | `/play/CODE` | Join with a nickname. Hangman: on-screen keyboard (a physical keyboard works too) and hint. Emoji Decode: large answer box with a **Show clue** button. Both: power-ups and reactions. |
 
@@ -201,6 +202,24 @@ c("🍺🏓", "Beer Pong", [], "medium", "pg13"),
   - No Emoji 14+ characters.
 - Like the word bank, the clue bank is `server-only` and never ships to browsers.
 
+### Most Likely To questions: [`src/data/questions.ts`](src/data/questions.ts)
+
+Each line finishes the sentence "Who is most likely to …?", grouped by pack (the section it's in is its pack):
+
+```ts
+q("miss their own graduation"),                                  // Clean (default)
+q("start chaos in the group chat and then go to sleep", "pg13"), // only in PG-13 games
+```
+
+- Keep it playful: harmless habits, funny scenarios and friend-group humor.
+- No questions about health, mental health, sexuality, gender, race, religion, immigration, money, body shape, trauma, relationships, crimes, or anything degrading.
+- `npm test` checks the file:
+  - 30+ questions per pack and no duplicates.
+  - 10–120 characters as displayed.
+  - The content filter.
+  - A list of off-limits topic words.
+- The bank is `server-only` and never ships to browsers.
+
 ### Starter dares: [`src/data/dares.ts`](src/data/dares.ts)
 
 Each `d("text", "clean" | "pg13")` entry is one dare. Keep dares **safe, consensual and optional**: no alcohol, nothing physically risky, nothing degrading. Hosts can also add custom dares on the Prep screen.
@@ -230,13 +249,14 @@ Late joiners start with 0 points from the next round. Phones that refresh or rec
 - Pick it at the top of **Host Prep → Game settings**, or with the **Game mode** picker on Host Controls in the lobby.
 - After a game ends you can switch modes, then tap **Play Again**. Settings can be changed in the lobby and on the game-over screen, but not mid-game.
 - The TV lobby and every phone show which mode is on.
-- Every other setting applies to all modes: rounds, timer, categories, difficulty, content level, friend-written words and the Dare Wheel.
+- Rounds, content level, friend-written rounds and the Dare Wheel apply to every mode. The round timer, categories and difficulty apply to the word modes (Hangman, Emoji Decode). The voting timer and question packs apply to Most Likely To. Host Prep only shows the settings for the modes you picked.
 
 | Mode | What happens |
 | --- | --- |
 | 🔤 Hangman (default) | Unchanged from before: guess letters before your 6 balloons pop. |
 | 😀 Emoji Decode | Every round is an emoji clue. |
-| 🔀 Mixed | Round 1 Hangman, round 2 Emoji Decode, round 3 Hangman, and so on. Answers never repeat across the two modes. |
+| 👑 Most Likely To | Every round is a vote. Needs at least 3 players. |
+| 🔀 Mixed | Rotates through the modes ticked under **Include in Mixed** (at least two), one per round, in order: Hangman → Emoji Decode → Most Likely To. The default is Hangman + Emoji Decode, the original Mixed. Answers never repeat across Hangman and Emoji Decode. |
 
 **An Emoji Decode round:**
 1. The TV shows a big emoji clue, the category, the timer and how many players have answered. The leaderboard beside it shows each player's attempts left and whether they've solved it, but never their guesses.
@@ -294,6 +314,40 @@ Other rules:
 - **Dare Wheel:** the player in last place overall spins the wheel. They can pass, and the host can re-spin. It auto-spins after 15 s.
 - **Friend-written words** are used for about ⅓ of the rounds (`round(rounds / 3)` of them, if enough were submitted). The author sits out that round and is revealed only after it ends. Unused submissions are never shown to anyone except the host.
 
+**A Most Likely To round:**
+1. The TV shows a question such as *"Who is most likely to miss their own graduation?"*, the voting timer and how many votes are in. The leaderboard shows who has voted, never for whom.
+2. Each player picks a name from a large, scrollable list on their phone and taps **Lock vote**. Voting for yourself is allowed. Once locked, the phone shows **Vote locked**.
+3. The round ends when the voting timer (15/20/30 s, default 20) runs out or everyone has voted.
+4. The TV builds suspense:
+   - Players with no votes are listed in one line.
+   - Vote totals then appear from lowest to highest.
+   - The player with the most votes is crowned 👑. Ties crown everyone tied, and if nobody voted there's no crown.
+5. The TV shows round points and the leaderboard, then waits for **Next**. Phones show **You read the room!** if your vote matched the crown. Otherwise they show the usual **YOU SUCK 😂** (PG-13) or **YOU'RE OUT 😂** (Clean).
+
+**Most Likely To details:**
+- **Settings:**
+  - **3 players minimum.** A Most Likely To-only game won't start with fewer. If players leave mid-game, the next round is held and the host and TV say so; once someone joins, tap Next. In Mixed, Most Likely To rounds are simply skipped while fewer than 3 players are in.
+  - **Question packs:** College Life, Friend Group, Chaos, Future Predictions and Funny Habits, plus **Host's Questions** once you add your own on Host Prep. Questions never repeat within a game.
+  - **Friend-written questions:** with friend-written rounds on, each player can submit one question in the lobby. The host can review and remove them. They're used for about a third of the Most Likely To rounds and are always anonymous (not even the host sees who wrote one), with no author points.
+  - **Validation:** custom questions are 10–120 characters and go through the usual content filter. Write a full "Who…?" question or just the ending ("adopt a goat named Kevin").
+- **During a game:**
+  - **Skip:** the host can skip a question before the reveal. The votes are discarded unseen and nobody gets points.
+  - **Late joiners** vote and appear as options from the next round.
+  - **Removed players** can't vote and stop being options. Any vote they cast is discarded. Anyone who had voted *for* them gets their vote back and can vote again before time runs out; otherwise it counts as missed.
+- **Existing features:**
+  - **Power-ups** (the same 2 per game):
+    - Freeze locks a rival's voting screen for 5 s, but not in the final 5 seconds.
+    - Peek privately shows the current leader.
+    - Double Vote counts your vote twice.
+  - **Loser Picks:** the lowest scorer picks the next *question pack*. If the next round is a word round, they pick a category as before.
+  - **Dare Wheel:** unchanged.
+  - **Sudden Death:** games with word rounds keep the Hangman or Emoji Decode tiebreak. In a Most Likely To-only game, the non-tied players vote on the tied players, and a tied vote is settled at random.
+  - **Awards:** **Crowd Favorite** goes to the most crowns and **Mind Reader** to the most correct votes. Awards nobody qualifies for are hidden.
+- **Vote privacy:**
+  - No screen shows who voted for whom. That includes the host's screen, and the voter's own phone, which only ever says "Vote locked".
+  - Votes live only on the server. They never appear in client code, Realtime messages or API responses, and they're validated there: one vote per player per round, current options only, rate-limited.
+  - Once a round is scored, the voter → vote record is deleted and only the totals are kept. Everything else is deleted with the room under the usual 24-hour cleanup.
+
 ### Emoji Decode scoring
 
 | Event | Points |
@@ -305,6 +359,19 @@ Other rules:
 | Final round | doubled, as in Hangman |
 
 Scores can't go below 0, and both modes add to one shared leaderboard.
+
+### Most Likely To scoring
+
+| Event | Points |
+| --- | --- |
+| You voted for a crowned player | **+100** |
+| You were crowned | **+50** |
+| Missed vote, or a vote for anyone else | **0** |
+| Tie for the most votes | everyone tied is crowned, and votes for any of them count |
+| Nobody votes | no crown, no points |
+| Final round | doubled, as in the other modes |
+
+Points are added when the round ends, so the leaderboard never hints at who is leading the vote.
 
 ### Answer matching
 
@@ -327,7 +394,8 @@ Phones / TV / Host ──HTTPS──▶ Next.js API routes (Vercel) ──SQL (r
         └──── Supabase Realtime ◀───────┘  "room changed, seq=N" (no game data)
 ```
 
-- **No database migration for Emoji Decode.** Room state is one JSONB document, so the new fields are just extra keys with defaults. Rooms saved by an older version are upgraded in memory when loaded (`upgradeState`), so existing data is never rewritten or lost. `supabase/migrations/0001_init.sql` is still the only migration.
+- **No database migration for Emoji Decode or Most Likely To.** Room state is one JSONB document, so the new fields are just extra keys with defaults. Rooms saved by an older version are upgraded in memory when loaded (`upgradeState`), so existing data is never rewritten or lost. `supabase/migrations/0001_init.sql` is still the only migration, and votes are deleted with their room by the existing cleanup.
+- **Votes are secret by construction.** The voter → vote map lives only in server state. Views are built from totals, and the map is wiped as soon as a round is scored. A unit test plays the same round with different voters but identical totals and checks that every screen's data is byte-for-byte identical.
 - **The server is the source of truth.** All game state for a room is one JSONB document, changed only inside `SELECT … FOR UPDATE` transactions by a pure, unit-tested engine (`src/lib/game/engine.ts`). That covers rounds, guesses, timers, power-ups and scores.
 - **Timers without a long-running server.** The server stores deadlines. Expiry, Loser Picks timeouts and dare auto-spins are applied lazily on any request, and clients wake up at each deadline, so nothing waits on a background process. Pausing freezes the remaining time on the server.
 - **The answer never leaves the server early.** Clients only receive role-specific *views* (`src/lib/game/views.ts`):
@@ -383,7 +451,8 @@ npm run test:e2e
 
 # load test: 2 concurrent games × 15 players against a running server (Mixed mode by default)
 BASE_URL=http://localhost:3000 DATABASE_URL=postgres://... npm run load-test
-#   GAMES=2 PLAYERS=15 ROUNDS=5 MODE=mixed by default (MODE=hangman|emoji|mixed)
+#   GAMES=2 PLAYERS=15 ROUNDS=5 MODE=mixed by default (MODE=hangman|emoji|mlt|mixed)
+#   MIXED=hangman,emoji,mlt sets the Mixed rotation; every response is scanned for individual votes
 #   With DATABASE_URL, some bots peek at the current Emoji answer (test oracle) so correct answers are exercised too
 
 npm run check   # lint + typecheck + tests + production build
@@ -412,6 +481,11 @@ Scripts such as `db:migrate` and `load-test` read `.env.local` themselves, and v
 | **Emoji Decode:** full games in Emoji Decode and Mixed mode (host, TV, 3 phones) | `tests/e2e/modes.spec.ts` |
 | **Emoji Decode:** 15 concurrent players in Mixed mode, scores match on server, phones and TV | `MODE=mixed npm run load-test` |
 | **Emoji Decode:** rooms saved before the update keep working | unit + integration "rooms saved before Emoji Decode existed" |
+| **Most Likely To:** existing modes unchanged | all earlier Hangman, Emoji Decode and Mixed tests pass unchanged (default Mixed = Hangman + Emoji Decode) |
+| **Most Likely To:** mode selection, voting, ties, scoring, double points, power-ups, custom questions, player removal, vote privacy | `tests/unit/mlt.test.ts`, `questions.test.ts` + `tests/integration/mlt-api.test.ts` |
+| **Most Likely To:** full Most Likely To game and a Mixed game (host, TV, multiple phones) | `tests/e2e/mlt.spec.ts` |
+| **Most Likely To:** 15 concurrent players, scores match on server, phones and TV, no vote leaks | `MODE=mlt npm run load-test` and `MODE=mixed MIXED=hangman,emoji,mlt npm run load-test` |
+| **Most Likely To:** dev tools / network can't reveal who voted for whom | unit "identical views" test, integration + e2e scans of every response, load-test scan |
 
 Before game night, confirm:
 

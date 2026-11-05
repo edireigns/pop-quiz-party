@@ -6,7 +6,8 @@
  *   BASE_URL=http://localhost:3000 DATABASE_URL=postgres://... npm run load-test
  *
  * Env: GAMES (2), PLAYERS (15), ROUNDS (5|10|15|20, default 5),
- *      MODE (hangman | emoji | mixed, default mixed).
+ *      MODE (hangman | emoji | mlt | mixed, default mixed),
+ *      MIXED (modes Mixed rotates through, default "hangman,emoji,mlt").
  * With DATABASE_URL set, "skilled" bots peek at the current Emoji Decode answer
  * (a test oracle) so correct, typo'd and wrong answers are all exercised.
  * At the end it checks that scores match on the server (DB), every phone,
@@ -21,7 +22,9 @@ const BASE = (process.env.BASE_URL ?? "http://localhost:3000").replace(/\/$/, ""
 const GAMES = Number(process.env.GAMES ?? 2);
 const PLAYERS = Number(process.env.PLAYERS ?? 15);
 const ROUNDS = Number(process.env.ROUNDS ?? 5);
-const MODE = (process.env.MODE ?? "mixed") as "hangman" | "emoji" | "mixed";
+const MODE = (process.env.MODE ?? "mixed") as "hangman" | "emoji" | "mlt" | "mixed";
+const MIXED = (process.env.MIXED ?? "hangman,emoji,mlt").split(",").map((m) => m.trim()) as ("hangman" | "emoji" | "mlt")[];
+const mltStats = { votes: 0, rounds: new Set<string>(), leaks: 0 };
 const oracleDb = process.env.DATABASE_URL ? postgres(process.env.DATABASE_URL, { prepare: false, max: 2, onnotice: () => {} }) : null;
 const oracleCache = new Map<string, string | null>();
 /** Test oracle: the current round's answer straight from the DB (never from the API). */
@@ -43,7 +46,7 @@ const rand = (a: number, b: number) => a + Math.random() * (b - a);
 const pick = <T,>(xs: T[]) => xs[Math.floor(Math.random() * xs.length)];
 
 const stats = { requests: 0, errors5xx: 0, unexpected4xx: 0, rateLimited: 0, lat: [] as number[], byStatus: new Map<number, number>(), limitedBy: new Map<string, number>() };
-const EXPECTED_CONFLICTS = new Set(["wrong_mode", "no_more_hints", "wrong_phase", "finished", "frozen", "already_guessed", "not_playing", "sitting_out", "paused", "already_frozen", "bad_target", "no_powerups_left", "already_spun", "not_picker", "not_spinner", "round_running", "nothing_to_reveal", "no_hints", "no_powerups", "max_lives"]);
+const EXPECTED_CONFLICTS = new Set(["vote_locked", "too_late", "already_double", "wrong_mode", "no_more_hints", "wrong_phase", "finished", "frozen", "already_guessed", "not_playing", "sitting_out", "paused", "already_frozen", "bad_target", "no_powerups_left", "already_spun", "not_picker", "not_spinner", "round_running", "nothing_to_reveal", "no_hints", "no_powerups", "max_lives"]);
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 async function req(path: string, opts: { method?: string; body?: unknown; headers?: Record<string, string> } = {}): Promise<{ status: number; body: any }> {
@@ -53,7 +56,13 @@ async function req(path: string, opts: { method?: string; body?: unknown; header
     headers: { "content-type": "application/json", "x-forwarded-for": "198.51.100.7", ...opts.headers },
     body: opts.body ? JSON.stringify(opts.body) : undefined,
   });
-  const body = await res.json().catch(() => ({}));
+  const text = await res.text();
+  // Vote privacy: no response may ever carry an individual vote.
+  if (text.includes("targetId") || text.includes('"votes":{')) mltStats.leaks++;
+  let body: any = {}; // eslint-disable-line @typescript-eslint/no-explicit-any
+  try {
+    body = text ? JSON.parse(text) : {};
+  } catch {}
   stats.lat.push(performance.now() - t0);
   stats.requests++;
   stats.byStatus.set(res.status, (stats.byStatus.get(res.status) ?? 0) + 1);
@@ -83,7 +92,7 @@ async function runGame(g: number) {
   const code: string = room.code;
   const H = { "x-host-token": room.hostToken };
   await req(`/api/rooms/${code}/host`, {
-    body: { action: "updateSettings", settings: { mode: MODE, rounds: ROUNDS, timerSec: 45, dareWheel: true, dareEvery: 2, friendWords: true, categories: ["movies", "food", "tv", "mixed"] } },
+    body: { action: "updateSettings", settings: { mode: MODE, mixedModes: MIXED, voteSec: 20, rounds: ROUNDS, timerSec: 45, dareWheel: true, dareEvery: 2, friendWords: true, categories: ["movies", "food", "tv", "mixed"] } },
     headers: H,
   });
   const bots: Bot[] = [];
@@ -122,6 +131,28 @@ async function runGame(g: number) {
         continue;
       }
       if (v.phase === "ended") break;
+      if (v.phase === "round" && v.my?.state === "playing" && !v.paused && v.round.mode === "mlt") {
+        // Most Likely To: maybe use a power-up, then vote (most of the room agrees on someone).
+        const key = `${v.round.number}-${v.round.sdAttempt}`;
+        mltStats.rounds.add(`${code}:${key}`);
+        if (key !== roundKey) {
+          roundKey = key;
+          if (b.usedPowerups < 2 && Math.random() < 0.25 && v.round.kind !== "suddenDeath") {
+            b.usedPowerups++;
+            const type = pick(["freeze", "reveal", "extraLife"]);
+            await req(`/api/rooms/${code}/play`, { body: { action: "powerup", type, targetId: v.my.freezeTargets[0]?.id }, headers: H });
+          }
+        }
+        await sleep(rand(500, 4000));
+        const cands = v.round.candidates as { id: string }[];
+        if (cands.length) {
+          const target = Math.random() < 0.6 ? cands[0] : pick(cands);
+          const { status } = await req(`/api/rooms/${code}/play`, { body: { action: "vote", targetId: target.id }, headers: H });
+          if (status === 200) mltStats.votes++;
+        }
+        await sleep(rand(400, 800));
+        continue;
+      }
       if (v.phase === "round" && v.my?.state === "playing" && !v.paused && v.round.mode === "emoji") {
         // Emoji Decode: think for a bit, then type an answer (correct, typo'd or wrong).
         const key = `${v.round.number}-${v.round.sdAttempt}`;
@@ -244,8 +275,12 @@ async function runGame(g: number) {
   const foreign = tvv.leaderboard.filter((e: { nickname: string }) => !e.nickname.startsWith(`G${g}P`));
   if (foreign.length) problems.push(`game ${code} sees players from another game: ${foreign.map((e: { nickname: string }) => e.nickname)}`);
   let modes = "";
-  if (oracleDb) modes = ((await oracleDb`select state->'history' as h from rooms where code = ${code}`)[0]?.h ?? []).map((h: { mode: string }) => (h.mode === "emoji" ? "E" : "H")).join("");
-  if (MODE === "mixed" && oracleDb && !/^(HE)+H?$/.test(modes)) problems.push(`mixed rounds did not alternate: ${modes}`);
+  if (oracleDb) modes = ((await oracleDb`select state->'history' as h from rooms where code = ${code}`)[0]?.h ?? []).map((h: { mode: string }) => (h.mode === "emoji" ? "E" : h.mode === "mlt" ? "M" : "H")).join("");
+  if (MODE === "mixed" && oracleDb) {
+    const letter = { hangman: "H", emoji: "E", mlt: "M" } as const;
+    const expected = Array.from({ length: modes.length }, (_, i) => letter[MIXED[i % MIXED.length]]).join("");
+    if (modes !== expected) problems.push(`mixed rounds should be ${expected} but were ${modes}`);
+  }
   return { code, problems, rounds: tvv.roundsPlayed, modes, winner: tvv.final?.standings?.[0], awards: tvv.final?.awards?.length ?? 0 };
 }
 
@@ -261,7 +296,9 @@ async function main() {
   if (stats.limitedBy.size) console.log(`429s by endpoint (expected anti-spam): ${[...stats.limitedBy].map(([k, v]) => `${k}=${v}`).join(", ")}`);
   console.log(`5xx: ${stats.errors5xx} · unexpected 4xx: ${stats.unexpected4xx} · 429: ${stats.rateLimited}`);
   if (emojiStats.answers) console.log(`Emoji Decode: ${emojiStats.rounds.size} rounds · ${emojiStats.answers} answers · ${emojiStats.correct} correct`);
-  let failed = stats.errors5xx > 0 || stats.unexpected4xx > 0;
+  if (mltStats.votes) console.log(`Most Likely To: ${mltStats.rounds.size} rounds · ${mltStats.votes} votes · responses carrying individual votes: ${mltStats.leaks}`);
+  if (mltStats.leaks) console.log("  ✗ vote privacy: some responses contained individual votes");
+  let failed = stats.errors5xx > 0 || stats.unexpected4xx > 0 || mltStats.leaks > 0;
   await oracleDb?.end();
   for (const r of results) {
     console.log(`Game ${r.code}: ${r.rounds} rounds${r.modes ? ` (${r.modes})` : ""} · winner ${r.winner?.nickname} (${r.winner?.score}) · ${r.awards} awards · ${r.problems.length ? "PROBLEMS" : "scores match on server, phones, TV and host ✓"}`);
