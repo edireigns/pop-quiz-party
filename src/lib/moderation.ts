@@ -37,7 +37,7 @@ const LEET: Record<string, string> = { "0": "o", "1": "i", "3": "e", "4": "a", "
 export function tokenize(text: string): string[] {
   const base = text
     .normalize("NFD")
-    .replace(/[̀-ͯ]/g, "")
+    .replace(/[\u0300-\u036f]/g, "")
     .toLowerCase()
     .replace(/[013457@$!]/g, (c) => LEET[c] ?? c);
   const raw = base.split(/[^a-z]+/).filter(Boolean);

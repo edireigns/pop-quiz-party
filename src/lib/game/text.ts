@@ -2,7 +2,7 @@
 
 /** Strip accents and upper-case a single character. */
 export function normalizeChar(ch: string): string {
-  return ch.normalize("NFD").replace(/[̀-ͯ]/g, "").toUpperCase();
+  return ch.normalize("NFD").replace(/[\u0300-\u036f]/g, "").toUpperCase();
 }
 
 /** A character the player must guess (A-Z after normalisation). */

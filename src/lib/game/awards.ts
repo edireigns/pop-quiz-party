@@ -20,7 +20,7 @@ export function standings(s: GameState): Standing[] {
 }
 
 export interface Award {
-  key: "speedDemon" | "livesLost" | "hintAddict" | "comebackKid" | "masterStumper";
+  key: "speedDemon" | "livesLost" | "hintAddict" | "comebackKid" | "masterStumper" | "emojiWhisperer";
   title: string;
   emoji: string;
   playerId: string;
@@ -74,10 +74,14 @@ export function computeAwards(s: GameState): Award[] {
       emoji: "🎈",
       playerId: lives.p.id,
       nickname: lives.p.nickname,
-      detail: `Popped ${lives.v} balloon${lives.v === 1 ? "" : "s"}`,
+      detail: s.history.some((h) => (h.mode ?? "hangman") === "hangman")
+        ? `Popped ${lives.v} balloon${lives.v === 1 ? "" : "s"}`
+        : `Missed ${lives.v} answer${lives.v === 1 ? "" : "s"}`,
     });
 
-  const hints = best(active, rankOf, (p) => (p.stats.hints > 0 ? p.stats.hints : null), more);
+  // Hint Addict only makes sense when the game had Hangman rounds (players buy hints there).
+  const playedHangman = s.history.some((h) => (h.mode ?? "hangman") === "hangman");
+  const hints = playedHangman ? best(active, rankOf, (p) => (p.stats.hints > 0 ? p.stats.hints : null), more) : null;
   if (hints)
     awards.push({
       key: "hintAddict",
@@ -110,7 +114,20 @@ export function computeAwards(s: GameState): Award[] {
       detail: `Climbed ${comeback.v} place${comeback.v === 1 ? "" : "s"}`,
     });
 
-  if (s.settings.friendWords) {
+  const whisperer = best(active, rankOf, (p) => ((p.stats.emojiSolves ?? 0) > 0 ? p.stats.emojiSolves : null), more);
+  if (whisperer)
+    awards.push({
+      key: "emojiWhisperer",
+      title: "Emoji Whisperer",
+      emoji: "🔮",
+      playerId: whisperer.p.id,
+      nickname: whisperer.p.nickname,
+      detail: `Decoded ${whisperer.v} emoji clue${whisperer.v === 1 ? "" : "s"}`,
+    });
+
+  // Use the settings the game was played with, so editing settings on the
+  // game-over screen (before Play Again) doesn't change the awards shown.
+  if ((s.startedSettings ?? s.settings).friendWords) {
     const stump = best(active, rankOf, (p) => (p.stats.stumped > 0 ? p.stats.stumped : null), more);
     if (stump)
       awards.push({

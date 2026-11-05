@@ -2,13 +2,17 @@
 // place (callers clone/persist) and takes a Ctx for time + randomness so the
 // whole game can be unit-tested and replayed.
 import { WORD_BANK } from "@/data/words";
+import { CLUE_BANK } from "@/data/clues";
 import { startersFor } from "@/data/dares";
 import { isBlocked } from "@/lib/moderation";
 import { REACTION_EMOJIS } from "@/data/categories";
 export { REACTION_EMOJIS };
+import { answerLetters, clueKey, hostHintText, isCorrectAnswer, MAX_HOST_HINTS, normalizeAnswer } from "./answers";
 import {
   applyDelta,
   DARE_AUTOSPIN_MS,
+  EMOJI,
+  emojiPoints,
   FREEZE_MS,
   LOSER_PICK_MS,
   MAX_PLAYERS,
@@ -23,6 +27,11 @@ import {
   type BuiltInCategoryId,
   CATEGORY_IDS,
   type CategoryId,
+  type ClueEntry,
+  GAME_MODES,
+  type GameMode,
+  type InsideClue,
+  type RoundMode,
   type Ctx,
   DARE_EVERY_OPTIONS,
   GameError,
@@ -41,6 +50,7 @@ import {
 export const BUILTIN_CATEGORIES: BuiltInCategoryId[] = ["tv", "genz", "movies", "music", "memes", "food", "college", "mixed"];
 
 export const DEFAULT_SETTINGS: Settings = {
+  mode: "hangman",
   rounds: 10,
   timerSec: 60,
   categories: [...BUILTIN_CATEGORIES],
@@ -95,6 +105,52 @@ export function knownLetters(r: Round, pr: PlayerProgress): Set<string> {
   return known;
 }
 
+/** Answers are tracked by two keys so Mixed mode never repeats an answer across Hangman and Emoji Decode. */
+function answerKeys(answer: string): string[] {
+  return [wordKey(answer), `n:${normalizeAnswer(answer)}`];
+}
+function isUsedAnswer(used: Set<string>, answer: string): boolean {
+  return answerKeys(answer).some((k) => used.has(k));
+}
+function markUsed(s: GameState, answer: string, clue: string | null) {
+  s.usedKeys.push(...answerKeys(answer));
+  if (clue) s.usedClues.push(clueKey(clue));
+}
+
+/** Which kind of round number `n` is. Mixed alternates, starting with Hangman. */
+export function roundModeFor(s: GameState, n: number): RoundMode {
+  const mode = s.settings.mode ?? "hangman";
+  if (mode === "mixed") return n % 2 === 1 ? "hangman" : "emoji";
+  return mode;
+}
+
+/** Sudden Death uses the game's mode; Mixed uses Hangman. */
+export function suddenDeathMode(s: GameState): RoundMode {
+  return s.settings.mode === "emoji" ? "emoji" : "hangman";
+}
+
+/**
+ * Fill in fields added after a room was saved (e.g. rooms created before Emoji
+ * Decode existed). Purely additive: existing data is never changed.
+ */
+export function upgradeState(s: GameState): GameState {
+  const any = s as unknown as Record<string, unknown>;
+  if (!(s.settings as Partial<Settings>).mode) s.settings.mode = "hangman";
+  if (!Array.isArray(any.insideClues)) s.insideClues = [];
+  if (!Array.isArray(any.usedClues)) s.usedClues = [];
+  if (any.startedSettings === undefined) s.startedSettings = null;
+  for (const p of s.players) if (typeof p.stats.emojiSolves !== "number") p.stats.emojiSolves = 0;
+  if (s.round) {
+    const r = s.round as Partial<Round> & Round;
+    if (!r.mode) r.mode = "hangman";
+    if (r.clue === undefined) r.clue = null;
+    if (!Array.isArray(r.alternates)) r.alternates = [];
+    if (!Array.isArray(r.hostHints)) r.hostHints = [];
+  }
+  for (const h of s.history) if (!h.mode) h.mode = "hangman";
+  return s;
+}
+
 export function remainingMs(r: Round, now: number): number {
   if (r.pausedRemainingMs != null) return r.pausedRemainingMs;
   return Math.max(0, r.deadline - now);
@@ -129,6 +185,9 @@ export function createGame(opts: { roomId: string; code: string; now: number; se
     usedDares: [],
     submissions: [],
     insideJokes: [],
+    insideClues: [],
+    usedClues: [],
+    startedSettings: null,
     customDares: [],
     nextCategory: null,
     loserPick: null,
@@ -147,8 +206,13 @@ export function createGame(opts: { roomId: string; code: string; now: number; se
 
 /** Validate and apply a (partial) settings patch. Lobby only. */
 export function updateSettings(s: GameState, patch: Partial<Settings>) {
-  assertPhase(s, "lobby");
+  // Lobby, or the game-over screen so the host can change things before Play Again.
+  assertPhase(s, "lobby", "ended");
   const next: Settings = { ...s.settings };
+  if (patch.mode !== undefined) {
+    if (!GAME_MODES.includes(patch.mode as GameMode)) throw new GameError("bad_settings", "Game mode must be Hangman, Emoji Decode or Mixed.");
+    next.mode = patch.mode;
+  }
   if (patch.rounds !== undefined) {
     if (!ROUND_OPTIONS.includes(patch.rounds)) throw new GameError("bad_settings", "Rounds must be 5, 10, 15 or 20.");
     next.rounds = patch.rounds;
@@ -201,7 +265,7 @@ export function addPlayer(s: GameState, opts: { nickname: string; tokenHash: str
     joinedAt: ctx.now,
     removed: false,
     powerupsLeft: POWERUPS_PER_GAME,
-    stats: { hints: 0, livesLost: 0, bestSolveMs: null, solves: 0, worstRank: null, stumped: 0 },
+    stats: { hints: 0, emojiSolves: 0, livesLost: 0, bestSolveMs: null, solves: 0, worstRank: null, stumped: 0 },
     reactionTimes: [],
     guessTimes: [],
   };
@@ -243,12 +307,31 @@ export function addInsideJoke(s: GameState, answer: string, hint: string, ctx: C
   bump(s);
 }
 
-export function removeInsideJoke(s: GameState, id: string) {
-  s.insideJokes = s.insideJokes.filter((j) => j.id !== id);
-  if (s.insideJokes.length === 0 && s.settings.categories.includes("inside") && s.phase === "lobby") {
+function dropInsideCategoryIfEmpty(s: GameState) {
+  if (s.insideJokes.length === 0 && s.insideClues.length === 0 && s.settings.categories.includes("inside")) {
     const cats = s.settings.categories.filter((c) => c !== "inside");
     s.settings.categories = cats.length ? cats : [...BUILTIN_CATEGORIES];
   }
+}
+
+export function removeInsideJoke(s: GameState, id: string) {
+  s.insideJokes = s.insideJokes.filter((j) => j.id !== id);
+  dropInsideCategoryIfEmpty(s);
+  bump(s);
+}
+
+/** Host-written emoji clue for the Inside Jokes category (Emoji Decode rounds). */
+export function addInsideClue(s: GameState, clue: string, answer: string, alternates: string[], ctx: Ctx) {
+  if (s.insideClues.length >= 100) throw new GameError("too_many", "Inside Jokes clues are full (100 max).");
+  if (s.insideClues.some((j) => normalizeAnswer(j.answer) === normalizeAnswer(answer) || clueKey(j.clue) === clueKey(clue)))
+    throw new GameError("duplicate", "That emoji clue or answer is already on the list.");
+  s.insideClues.push({ id: ctx.id(), clue, answer, alternates });
+  bump(s);
+}
+
+export function removeInsideClue(s: GameState, id: string) {
+  s.insideClues = s.insideClues.filter((j) => j.id !== id);
+  dropInsideCategoryIfEmpty(s);
   bump(s);
 }
 
@@ -263,18 +346,22 @@ export function removeCustomDare(s: GameState, id: string) {
   bump(s);
 }
 
-export function submitWord(s: GameState, playerId: string, answer: string, hint: string, ctx: Ctx) {
+export function submitWord(s: GameState, playerId: string, answer: string, hint: string, ctx: Ctx, clue?: string) {
   assertPhase(s, "lobby");
   if (!s.settings.friendWords) throw new GameError("friend_words_off", "Friend-written words are turned off.", 409);
+  if (s.settings.mode === "emoji" && !clue)
+    throw new GameError("clue_required", "Add an emoji clue for your word — this game is Emoji Decode.");
   getPlayer(s, playerId);
   const existing = s.submissions.find((x) => x.playerId === playerId && x.status === "pending");
   if (existing) {
     existing.answer = answer;
     existing.hint = hint;
+    if (clue) existing.clue = clue;
+    else delete existing.clue;
   } else {
     if (s.submissions.some((x) => x.playerId === playerId && x.status === "removed"))
       throw new GameError("submission_removed", "The host removed your word. You can't submit another this game.", 409);
-    s.submissions.push({ id: ctx.id(), playerId, answer, hint, status: "pending" });
+    s.submissions.push({ id: ctx.id(), playerId, answer, hint, status: "pending", ...(clue ? { clue } : {}) });
   }
   bump(s);
 }
@@ -296,20 +383,41 @@ function builtinPool(s: GameState, cat: BuiltInCategoryId, strictDifficulty: boo
     (e) =>
       (s.settings.content === "pg13" || e.content === "clean") &&
       (!strictDifficulty || s.settings.difficulty === "mixed" || e.difficulty === s.settings.difficulty) &&
-      !used.has(wordKey(e.answer)),
+      !isUsedAnswer(used, e.answer),
   );
 }
 
 function insidePool(s: GameState) {
   const used = new Set(s.usedKeys);
-  return s.insideJokes.filter((j) => !used.has(wordKey(j.answer)) && !isBlocked(j.answer, s.settings.content));
+  return s.insideJokes.filter((j) => !isUsedAnswer(used, j.answer) && !isBlocked(j.answer, s.settings.content));
 }
 
-/** Categories that still have unused words available. */
-export function availableCategories(s: GameState): CategoryId[] {
-  return s.settings.categories.filter((c) =>
-    c === "inside" ? insidePool(s).length > 0 : builtinPool(s, c, false).length > 0,
+function cluePool(s: GameState, cat: BuiltInCategoryId, strictDifficulty: boolean): ClueEntry[] {
+  const used = new Set(s.usedKeys);
+  const usedClues = new Set(s.usedClues);
+  return CLUE_BANK[cat].filter(
+    (e) =>
+      (s.settings.content === "pg13" || e.content === "clean") &&
+      (!strictDifficulty || s.settings.difficulty === "mixed" || e.difficulty === s.settings.difficulty) &&
+      !isUsedAnswer(used, e.answer) &&
+      !usedClues.has(clueKey(e.clue)),
   );
+}
+
+function insideCluePool(s: GameState): InsideClue[] {
+  const used = new Set(s.usedKeys);
+  const usedClues = new Set(s.usedClues);
+  return s.insideClues.filter(
+    (j) => !isUsedAnswer(used, j.answer) && !usedClues.has(clueKey(j.clue)) && !isBlocked(j.answer, s.settings.content),
+  );
+}
+
+/** Categories that still have unused content for the given round mode (default: the next round's). */
+export function availableCategories(s: GameState, mode: RoundMode = roundModeFor(s, s.roundsPlayed + 1)): CategoryId[] {
+  return s.settings.categories.filter((c) => {
+    if (mode === "emoji") return c === "inside" ? insideCluePool(s).length > 0 : cluePool(s, c, false).length > 0;
+    return c === "inside" ? insidePool(s).length > 0 : builtinPool(s, c, false).length > 0;
+  });
 }
 
 export function chooseWord(
@@ -332,7 +440,7 @@ export function chooseWord(
     }
   }
   // Fallbacks: another selected category, then any built-in category.
-  const others = availableCategories(s).filter((c) => c !== category);
+  const others = availableCategories(s, "hangman").filter((c) => c !== category);
   if (others.length) return chooseWord(s, pick(others, ctx.random), ctx);
   const anyBuiltin = BUILTIN_CATEGORIES.filter((c) => builtinPool(s, c, false).length > 0);
   if (anyBuiltin.length) {
@@ -345,11 +453,46 @@ export function chooseWord(
   return chooseWord(s, category === "inside" ? "mixed" : category, ctx);
 }
 
-function friendWordAvailable(s: GameState, roundNumber: number) {
+export function chooseClue(
+  s: GameState,
+  category: CategoryId,
+  ctx: Ctx,
+): { clue: string; answer: string; alternates: string[]; category: CategoryId; source: WordSource } {
+  if (category === "inside") {
+    const pool = insideCluePool(s);
+    if (pool.length) {
+      const j = pick(pool, ctx.random);
+      return { clue: j.clue, answer: j.answer, alternates: j.alternates, category: "inside", source: "inside" };
+    }
+  } else {
+    let pool = cluePool(s, category, true);
+    if (!pool.length) pool = cluePool(s, category, false);
+    if (pool.length) {
+      const e = pick(pool, ctx.random);
+      return { clue: e.clue, answer: e.answer, alternates: e.alternates, category, source: "builtin" };
+    }
+  }
+  const others = availableCategories(s, "emoji").filter((c) => c !== category);
+  if (others.length) return chooseClue(s, pick(others, ctx.random), ctx);
+  const anyBuiltin = BUILTIN_CATEGORIES.filter((c) => cluePool(s, c, false).length > 0);
+  if (anyBuiltin.length) {
+    const c = pick(anyBuiltin, ctx.random);
+    const e = pick(cluePool(s, c, false), ctx.random);
+    return { clue: e.clue, answer: e.answer, alternates: e.alternates, category: c, source: "builtin" };
+  }
+  s.usedKeys = [];
+  s.usedClues = [];
+  return chooseClue(s, category === "inside" ? "mixed" : category, ctx);
+}
+
+function friendWordAvailable(s: GameState, roundNumber: number, mode: RoundMode = roundModeFor(s, roundNumber)) {
   if (!s.settings.friendWords || !s.friendRoundPlan.includes(roundNumber)) return null;
   if (activePlayers(s).length < 2) return null;
   const pending = s.submissions.filter(
-    (x) => x.status === "pending" && s.players.some((p) => p.id === x.playerId && !p.removed),
+    (x) =>
+      x.status === "pending" &&
+      (mode === "hangman" || !!x.clue) && // Emoji Decode rounds need a clue
+      s.players.some((p) => p.id === x.playerId && !p.removed),
   );
   return pending.length ? pending : null;
 }
@@ -366,8 +509,11 @@ export function startGame(s: GameState, ctx: Ctx) {
   s.suddenDeath = null;
   s.lastDareRound = 0;
   s.friendRoundPlan = [];
+  s.startedSettings = { ...s.settings, categories: [...s.settings.categories] };
   if (s.settings.friendWords) {
-    const pending = s.submissions.filter((x) => x.status === "pending" && !getRemoved(s, x.playerId));
+    const pending = s.submissions.filter(
+      (x) => x.status === "pending" && !getRemoved(s, x.playerId) && (s.settings.mode !== "emoji" || !!x.clue),
+    );
     const count = Math.min(pending.length, Math.round(s.settings.rounds / 3));
     const rounds = Array.from({ length: s.settings.rounds }, (_, i) => i + 1);
     s.friendRoundPlan = shuffle(rounds, ctx.random).slice(0, count).sort((a, b) => a - b);
@@ -399,44 +545,60 @@ function newProgress(lives: number): PlayerProgress {
 export function startRound(s: GameState, ctx: Ctx, category?: CategoryId | null) {
   const n = s.roundsPlayed + 1;
   const kind = n >= s.settings.rounds ? "final" : "normal";
+  const mode = roundModeFor(s, n);
   const active = activePlayers(s);
 
   let answer: string, hint: string, cat: CategoryId | "friend", source: WordSource;
+  let clue: string | null = null;
+  let alternates: string[] = [];
   let authorId: string | null = null;
-  const friendPool = friendWordAvailable(s, n);
+  const friendPool = friendWordAvailable(s, n, mode);
   if (friendPool) {
     const sub = pick(friendPool, ctx.random);
     sub.status = "used";
     answer = sub.answer;
     hint = sub.hint;
+    if (mode === "emoji") clue = sub.clue ?? null;
     cat = "friend";
     source = "friend";
     authorId = sub.playerId;
   } else {
-    const available = availableCategories(s);
+    const available = availableCategories(s, mode);
     const want = category ?? s.nextCategory ?? (available.length ? pick(available, ctx.random) : pick(s.settings.categories, ctx.random));
-    const w = chooseWord(s, want, ctx);
-    answer = w.answer;
-    hint = w.hint;
-    cat = w.category;
-    source = w.source;
+    if (mode === "emoji") {
+      const c = chooseClue(s, want, ctx);
+      ({ answer, clue, alternates } = c);
+      hint = "";
+      cat = c.category;
+      source = c.source;
+    } else {
+      const w = chooseWord(s, want, ctx);
+      answer = w.answer;
+      hint = w.hint;
+      cat = w.category;
+      source = w.source;
+    }
   }
-  s.usedKeys.push(wordKey(answer));
+  markUsed(s, answer, clue);
 
   const participants = active.map((p) => p.id).filter((id) => id !== authorId);
   const durationMs = s.settings.timerSec * 1000;
   const progress: Record<string, PlayerProgress> = {};
-  for (const id of participants) progress[id] = newProgress(STARTING_LIVES);
+  for (const id of participants) progress[id] = newProgress(mode === "emoji" ? EMOJI.attempts : STARTING_LIVES);
 
   s.roundsPlayed = n;
   s.round = {
     id: ctx.id(),
+    mode,
     number: n,
     kind,
     sdAttempt: 0,
     category: cat,
     answer,
     hint,
+    clue,
+    alternates,
+    hostHints: [],
     source,
     authorId,
     startedAt: ctx.now,
@@ -468,21 +630,29 @@ function startSuddenDeath(s: GameState, ctx: Ctx) {
     finishGame(s, ctx);
     return;
   }
-  const available = availableCategories(s).filter((c) => c !== "inside");
+  const mode = suddenDeathMode(s);
+  const available = availableCategories(s, mode).filter((c) => c !== "inside");
   const cat = available.length ? pick(available, ctx.random) : pick(BUILTIN_CATEGORIES, ctx.random);
-  const w = chooseWord(s, cat, ctx);
-  s.usedKeys.push(wordKey(w.answer));
+  const w =
+    mode === "emoji"
+      ? chooseClue(s, cat, ctx)
+      : { ...chooseWord(s, cat, ctx), clue: null as string | null, alternates: [] as string[] };
+  markUsed(s, w.answer, w.clue);
   const durationMs = s.settings.timerSec * 1000;
   const progress: Record<string, PlayerProgress> = {};
-  for (const id of sd.playerIds) progress[id] = newProgress(1);
+  for (const id of sd.playerIds) progress[id] = newProgress(1); // one wrong guess/answer eliminates
   s.round = {
     id: ctx.id(),
+    mode,
     number: s.roundsPlayed,
     kind: "suddenDeath",
     sdAttempt: sd.attempt,
     category: w.category,
     answer: w.answer,
-    hint: w.hint,
+    hint: "hint" in w ? w.hint : "",
+    clue: w.clue,
+    alternates: w.alternates,
+    hostHints: [],
     source: w.source,
     authorId: null,
     startedAt: ctx.now,
@@ -534,13 +704,15 @@ function markSolved(s: GameState, r: Round, playerId: string, pr: PlayerProgress
     endRound(s, ctx, "sdWinner");
     return;
   }
-  addScore(s, playerId, solveBonus(pr.lives, rem, r.durationMs) * r.multiplier, pr);
+  const base = r.mode === "emoji" ? emojiPoints(rem, r.durationMs, r.hostHints.length) : solveBonus(pr.lives, rem, r.durationMs);
+  addScore(s, playerId, base * r.multiplier, pr);
 }
 
 export function guess(s: GameState, playerId: string, rawLetter: unknown, ctx: Ctx) {
   const letter = normalizeGuess(rawLetter);
   if (!letter) throw new GameError("bad_letter", "Guess a single letter A–Z.");
   const { r, pr } = currentProgress(s, playerId);
+  if (r.mode === "emoji") throw new GameError("wrong_mode", "This is an Emoji Decode round — type the answer.", 409);
   if (pr.frozenUntil > ctx.now) throw new GameError("frozen", "Your keyboard is frozen! ❄️", 409);
   const p = getPlayer(s, playerId);
   p.guessTimes = rateLimit(p.guessTimes, ctx.now, 1000, 12);
@@ -566,6 +738,7 @@ export function guess(s: GameState, playerId: string, rawLetter: unknown, ctx: C
 
 export function takeHint(s: GameState, playerId: string, ctx: Ctx) {
   const { r, pr } = currentProgress(s, playerId);
+  if (r.mode === "emoji") throw new GameError("wrong_mode", "In Emoji Decode the host drops the hints.", 409);
   if (r.kind === "suddenDeath") throw new GameError("no_hints", "No hints in Sudden Death!", 409);
   if (pr.hintUsed) return r.hint;
   pr.hintUsed = true;
@@ -589,6 +762,16 @@ export function activatePowerup(s: GameState, playerId: string, type: PowerUp, t
     if (tp.frozenOnce) throw new GameError("already_frozen", "That player was already frozen this round.", 409);
     tp.frozenOnce = true;
     tp.frozenUntil = ctx.now + FREEZE_MS;
+  } else if (type === "reveal" && r.mode === "emoji") {
+    // Privately reveal one letter of the answer (never the first letter once that hint is out).
+    const letters = answerLetters(r.answer);
+    const taken = new Set(pr.revealedPos ?? []);
+    const options = letters.map((_, i) => i).filter((i) => !taken.has(i) && !(i === 0 && r.hostHints.length > 0));
+    if (options.length === 0) throw new GameError("nothing_to_reveal", "Nothing left to reveal.", 409);
+    pr.revealedPos = [...(pr.revealedPos ?? []), pick(options, ctx.random)];
+  } else if (type === "extraLife" && r.mode === "emoji") {
+    if (pr.lives >= EMOJI.maxAttempts) throw new GameError("max_lives", `You can't have more than ${EMOJI.maxAttempts} attempts!`, 409);
+    pr.lives += 1;
   } else if (type === "reveal") {
     const known = knownLetters(r, pr);
     const hidden = [...letterSet(r.answer)].filter((l) => !known.has(l));
@@ -606,6 +789,47 @@ export function activatePowerup(s: GameState, playerId: string, type: PowerUp, t
   pr.powerupsUsed.push(type);
   bump(s);
   if (s.phase === "round") checkRoundComplete(s, ctx);
+}
+
+/** Emoji Decode: submit a typed answer. Up to 3 attempts (1 in Sudden Death). */
+export function submitAnswer(s: GameState, playerId: string, raw: unknown, ctx: Ctx) {
+  if (typeof raw !== "string") throw new GameError("bad_answer", "Type an answer.");
+  const text = raw.replace(/\s+/g, " ").trim();
+  if (!text || text.length > 60) throw new GameError("bad_answer", "Type an answer (up to 60 characters).");
+  const { r, pr } = currentProgress(s, playerId);
+  if (r.mode !== "emoji") throw new GameError("wrong_mode", "This is a Hangman round — guess letters.", 409);
+  if (pr.frozenUntil > ctx.now) throw new GameError("frozen", "Your answer box is frozen! ❄️", 409);
+  const p = getPlayer(s, playerId);
+  p.guessTimes = rateLimit(p.guessTimes, ctx.now, 5000, 5, 400);
+  const norm = normalizeAnswer(text);
+  if (!norm) throw new GameError("bad_answer", "Type an answer with letters or numbers.");
+  if (pr.wrong.some((w) => normalizeAnswer(w) === norm)) throw new GameError("already_guessed", "You already tried that one.", 409);
+  pr.guessed.push(text);
+  const correct = isCorrectAnswer(text, r.answer, r.alternates);
+  if (correct) {
+    markSolved(s, r, playerId, pr, ctx);
+  } else {
+    pr.wrong.push(text);
+    pr.lives -= 1;
+    if (pr.lives <= 0) {
+      pr.lives = 0;
+      pr.status = "out";
+    }
+  }
+  bump(s);
+  if (s.phase === "round") checkRoundComplete(s, ctx);
+  return { correct, attemptsLeft: pr.lives };
+}
+
+/** Emoji Decode: the host reveals the next hint to everyone (max 2). */
+export function dropHint(s: GameState, ctx: Ctx) {
+  assertPhase(s, "round");
+  const r = s.round!;
+  if (r.mode !== "emoji") throw new GameError("wrong_mode", "Hints can only be dropped in Emoji Decode rounds.", 409);
+  if (r.hostHints.length >= MAX_HOST_HINTS) throw new GameError("no_more_hints", "Both hints are already out.", 409);
+  r.hostHints.push(hostHintText(r.answer, r.hostHints.length));
+  bump(s);
+  void ctx;
 }
 
 export function checkRoundComplete(s: GameState, ctx: Ctx) {
@@ -654,6 +878,7 @@ export function endRound(s: GameState, ctx: Ctx, reason: NonNullable<Round["endR
     if (!pr || !p) continue;
     if (pr.hintUsed) p.stats.hints += 1;
     p.stats.livesLost += pr.wrong.length;
+    if (pr.status === "solved" && r.mode === "emoji" && r.kind !== "suddenDeath") p.stats.emojiSolves += 1;
     if (pr.status === "solved" && pr.solveMs != null) {
       p.stats.solves += 1;
       p.stats.bestSolveMs = p.stats.bestSolveMs == null ? pr.solveMs : Math.min(p.stats.bestSolveMs, pr.solveMs);
@@ -679,6 +904,7 @@ export function endRound(s: GameState, ctx: Ctx, reason: NonNullable<Round["endR
       };
     }
     s.history.push({
+      mode: r.mode,
       number: r.number,
       kind: r.kind,
       answer: r.answer,
@@ -782,8 +1008,9 @@ export function next(s: GameState, ctx: Ctx) {
 function proceedToNextRound(s: GameState, ctx: Ctx) {
   const n = s.roundsPlayed + 1;
   const r = s.round;
-  const options = availableCategories(s);
-  if (!friendWordAvailable(s, n) && options.length >= 2 && r && r.kind !== "suddenDeath" && r.endReason !== "skipped") {
+  const mode = roundModeFor(s, n);
+  const options = availableCategories(s, mode);
+  if (!friendWordAvailable(s, n, mode) && options.length >= 2 && r && r.kind !== "suddenDeath" && r.endReason !== "skipped") {
     const candidates = r.participants
       .filter((id) => !getRemoved(s, id) && r.progress[id])
       .map((id) => ({ id, pts: r.progress[id].points }));
@@ -905,7 +1132,7 @@ export function playAgain(s: GameState, ctx: Ctx) {
   for (const p of s.players) {
     p.score = 0;
     p.powerupsLeft = POWERUPS_PER_GAME;
-    p.stats = { hints: 0, livesLost: 0, bestSolveMs: null, solves: 0, worstRank: null, stumped: 0 };
+    p.stats = { hints: 0, emojiSolves: 0, livesLost: 0, bestSolveMs: null, solves: 0, worstRank: null, stumped: 0 };
   }
   s.submissions = s.submissions.filter((x) => x.status === "pending");
   s.phase = "lobby";

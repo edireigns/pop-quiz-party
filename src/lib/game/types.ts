@@ -19,11 +19,19 @@ export type Difficulty = "easy" | "medium" | "hard";
 export type DifficultySetting = Difficulty | "mixed";
 export type ContentLevel = "clean" | "pg13";
 
+export const GAME_MODES = ["hangman", "emoji", "mixed"] as const;
+/** The host's choice for the whole game. */
+export type GameMode = (typeof GAME_MODES)[number];
+/** What a single round plays. Mixed alternates Hangman / Emoji Decode. */
+export type RoundMode = "hangman" | "emoji";
+
 export const ROUND_OPTIONS = [5, 10, 15, 20] as const;
 export const TIMER_OPTIONS = [45, 60, 90] as const;
 export const DARE_EVERY_OPTIONS = [2, 3, 5] as const;
 
 export interface Settings {
+  /** Defaults to "hangman". Older saved rooms without it are upgraded on load. */
+  mode: GameMode;
   rounds: (typeof ROUND_OPTIONS)[number];
   timerSec: (typeof TIMER_OPTIONS)[number];
   categories: CategoryId[];
@@ -41,8 +49,18 @@ export interface WordEntry {
   content: ContentLevel;
 }
 
+export interface ClueEntry {
+  clue: string; // emojis only
+  answer: string;
+  alternates: string[];
+  difficulty: Difficulty;
+  content: ContentLevel;
+}
+
 export interface PlayerStats {
   hints: number;
+  /** Correct Emoji Decode answers (Emoji Whisperer award). */
+  emojiSolves: number;
   livesLost: number;
   bestSolveMs: number | null;
   solves: number;
@@ -72,7 +90,9 @@ export interface PlayerProgress {
   wrong: string[];
   lives: number;
   hintUsed: boolean;
-  revealed: string[]; // letters revealed by the Reveal power-up
+  revealed: string[]; // letters revealed by the Reveal power-up (Hangman)
+  /** Emoji Decode: letter positions (0-based, letters/digits only) revealed privately by the Reveal power-up. */
+  revealedPos?: number[];
   status: ProgressStatus;
   solvedAt: number | null;
   solveMs: number | null;
@@ -87,12 +107,19 @@ export type WordSource = "builtin" | "inside" | "friend";
 
 export interface Round {
   id: string;
+  /** "hangman" for rounds saved before Emoji Decode existed (filled in by upgradeState). */
+  mode: RoundMode;
   number: number; // main round number; sudden death keeps the last main number
   kind: RoundKind;
   sdAttempt: number; // 0 for normal rounds
   category: CategoryId | "friend";
   answer: string;
   hint: string;
+  /** Emoji Decode only: the emoji clue (public) and accepted alternates (SECRET until the round ends). */
+  clue: string | null;
+  alternates: string[];
+  /** Emoji Decode only: hints the host has dropped, in order (public). */
+  hostHints: string[];
   source: WordSource;
   authorId: string | null;
   startedAt: number;
@@ -116,6 +143,8 @@ export interface Submission {
   playerId: string;
   answer: string;
   hint: string;
+  /** Optional emoji clue so the word can be used in Emoji Decode rounds. */
+  clue?: string;
   status: "pending" | "used" | "removed";
 }
 
@@ -123,6 +152,13 @@ export interface InsideJoke {
   id: string;
   answer: string;
   hint: string;
+}
+
+export interface InsideClue {
+  id: string;
+  clue: string;
+  answer: string;
+  alternates: string[];
 }
 
 export interface CustomDare {
@@ -164,6 +200,7 @@ export interface RoundRecordEntry {
 }
 
 export interface RoundRecord {
+  mode: RoundMode;
   number: number;
   kind: RoundKind;
   answer: string;
@@ -192,6 +229,12 @@ export interface GameState {
   usedDares: string[];
   submissions: Submission[];
   insideJokes: InsideJoke[];
+  /** Host-written emoji clues for the Inside Jokes category in Emoji Decode rounds. */
+  insideClues: InsideClue[];
+  /** Emoji clues already shown this game (answers are tracked in usedKeys across both modes). */
+  usedClues: string[];
+  /** Settings the current/last game was started with (awards use these, so changing settings after a game doesn't rewrite it). */
+  startedSettings: Settings | null;
   customDares: CustomDare[];
   nextCategory: CategoryId | null;
   loserPick: LoserPickState | null;

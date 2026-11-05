@@ -51,3 +51,27 @@ export function rankMap(entries: { id: string; score: number }[]): Map<string, n
   });
   return out;
 }
+
+// ---------------------------------------------------------------------------
+// Emoji Decode
+// ---------------------------------------------------------------------------
+export const EMOJI = {
+  correct: 100,
+  speedMax: 100,
+  /** Taken off the maximum for each host hint revealed before the player answered. */
+  hintPenalty: 25,
+  attempts: 3,
+  /** Cap when stacking Extra Life power-ups. */
+  maxAttempts: 5,
+} as const;
+
+/**
+ * Points for a correct Emoji Decode answer (before the round multiplier):
+ * 100 + speed bonus (up to 100, linear by time left) − 25 per host hint already
+ * revealed, never below 0. Wrong or missing answers score 0.
+ */
+export function emojiPoints(remainingMs: number, durationMs: number, hintsBefore: number): number {
+  const f = durationMs > 0 ? Math.min(1, Math.max(0, remainingMs / durationMs)) : 0;
+  const speed = Math.round(EMOJI.speedMax * f);
+  return Math.max(0, EMOJI.correct + speed - EMOJI.hintPenalty * Math.max(0, hintsBefore));
+}

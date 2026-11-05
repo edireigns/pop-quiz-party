@@ -38,3 +38,10 @@ export function lettersOf(answer: string) {
 
 export const WRONG_FOR = (answer: string) =>
   "ZQXJKVWYFBGPMHUCDLRSNTOIAE".split("").filter((l) => !letterSet(answer).has(l));
+
+/** Replace the current Emoji Decode round's clue and answer (tests only). */
+export function forceClue(s: GameState, clue: string, answer: string, alternates: string[] = []) {
+  s.round!.clue = clue;
+  s.round!.answer = answer;
+  s.round!.alternates = alternates;
+}
