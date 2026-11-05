@@ -16,7 +16,13 @@ export async function POST(req: Request, ctx: RouteContext<"/api/rooms/[code]/pl
       const r = playerAction(s, c, p.id, body);
       return { playerId: p.id, r };
     });
-    const extra = body.action === "guess" ? { correct: (result.r as { correct?: boolean } | undefined)?.correct ?? null } : {};
+    const r = result.r as { correct?: boolean; attemptsLeft?: number } | undefined;
+    const extra =
+      body.action === "guess"
+        ? { correct: r?.correct ?? null }
+        : body.action === "answer"
+          ? { correct: r?.correct ?? null, attemptsLeft: r?.attemptsLeft ?? null }
+          : {};
     return json({ ...extra, view: playerView(state, result.playerId, now) });
   });
 }

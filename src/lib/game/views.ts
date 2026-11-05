@@ -4,9 +4,10 @@
 import { CATEGORY_EMOJI, CATEGORY_LABELS } from "@/data/categories";
 import { computeAwards, standings, type Award, type Standing } from "./awards";
 import { knownLetters, remainingMs } from "./engine";
-import { STARTING_LIVES } from "./scoring";
+import { EMOJI, STARTING_LIVES } from "./scoring";
+import { answerLetters } from "./answers";
 import { maskAnswer, solvedFraction, type MaskCell } from "./text";
-import type { CategoryId, GameState, Phase, Round, Settings } from "./types";
+import type { CategoryId, GameMode, GameState, Phase, Round, RoundMode, Settings } from "./types";
 
 export interface TimerView {
   deadline: number;
@@ -29,7 +30,13 @@ export interface RivalEntry {
 }
 
 export interface RevealView {
+  mode: RoundMode;
   answer: string;
+  /** How many participants got it, out of how many played. */
+  solvedCount: number;
+  totalPlayers: number;
+  /** Fastest correct player this round (null if nobody solved). */
+  fastest: { id: string; nickname: string; ms: number } | null;
   skipped: boolean;
   isFriend: boolean;
   authorId: string | null;
@@ -75,12 +82,21 @@ interface BaseView {
   code: string;
   phase: Phase;
   paused: boolean;
+  /** The host's Game Mode for this game. */
+  mode: GameMode;
   gameNumber: number;
   roundsPlayed: number;
   totalRounds: number;
   content: Settings["content"];
   leaderboard: LeaderEntry[];
   round: null | {
+    /** What this round plays. */
+    mode: RoundMode;
+    /** Emoji Decode: the emoji clue (shown to everyone) and the hints the host has dropped. */
+    clue: string | null;
+    hostHints: string[];
+    /** Players finished (solved or out) / players in the round. */
+    answered: { done: number; total: number };
     number: number;
     kind: Round["kind"];
     sdAttempt: number;
@@ -109,6 +125,17 @@ function nameOf(s: GameState, id: string | null) {
   return id ? (s.players.find((p) => p.id === id)?.nickname ?? "Someone") : null;
 }
 
+function revealStats(s: GameState, r: Round) {
+  const played = r.participants.filter((id) => r.progress[id]);
+  const solved = played.filter((id) => r.progress[id].status === "solved");
+  let fastest: RevealView["fastest"] = null;
+  for (const id of solved) {
+    const ms = r.progress[id].solveMs;
+    if (ms != null && (!fastest || ms < fastest.ms)) fastest = { id, nickname: nameOf(s, id)!, ms };
+  }
+  return { solvedCount: solved.length, totalPlayers: played.length, fastest };
+}
+
 function base(s: GameState, now: number): BaseView {
   const r = s.round;
   const showRound = r && s.phase !== "lobby";
@@ -129,6 +156,7 @@ function base(s: GameState, now: number): BaseView {
     code: s.code,
     phase: s.phase,
     paused: s.paused,
+    mode: s.settings.mode ?? "hangman",
     gameNumber: s.gameNumber,
     roundsPlayed: s.roundsPlayed,
     totalRounds: s.settings.rounds,
@@ -136,6 +164,13 @@ function base(s: GameState, now: number): BaseView {
     leaderboard,
     round: showRound
       ? {
+          mode: r.mode,
+          clue: r.mode === "emoji" ? r.clue : null,
+          hostHints: r.mode === "emoji" ? r.hostHints : [],
+          answered: {
+            done: r.participants.filter((id) => r.progress[id] && r.progress[id].status !== "playing").length,
+            total: r.participants.filter((id) => r.progress[id]).length,
+          },
           number: r.number,
           kind: r.kind,
           sdAttempt: r.sdAttempt,
@@ -154,7 +189,9 @@ function base(s: GameState, now: number): BaseView {
     reveal:
       showRound && ended
         ? {
+            mode: r.mode,
             answer: r.answer,
+            ...revealStats(s, r),
             skipped: r.endReason === "skipped",
             isFriend: r.source === "friend",
             authorId: r.authorId,
@@ -213,14 +250,15 @@ export function rivalsFor(s: GameState, now: number, disguiseAuthor: boolean): R
       const pr = r?.progress[p.id];
       if (!r || !pr) {
         if (r && disguiseAuthor && r.authorId === p.id && !r.endedAt)
-          return { id: p.id, nickname: p.nickname, lives: STARTING_LIVES, pct: 0, status: "playing", frozen: false };
+          return { id: p.id, nickname: p.nickname, lives: r.mode === "emoji" ? EMOJI.attempts : STARTING_LIVES, pct: 0, status: "playing", frozen: false };
         return { id: p.id, nickname: p.nickname, lives: 0, pct: 0, status: "waiting", frozen: false };
       }
       return {
         id: p.id,
         nickname: p.nickname,
-        lives: pr.lives,
-        pct: Math.round(solvedFraction(r.answer, knownLetters(r, pr)) * 100),
+        lives: pr.lives, // Emoji Decode: attempts left
+        // Emoji Decode has no partial progress, and guesses are never shown.
+        pct: r.mode === "emoji" ? (pr.status === "solved" ? 100 : 0) : Math.round(solvedFraction(r.answer, knownLetters(r, pr)) * 100),
         status: pr.status,
         frozen: pr.frozenUntil > now && !r.endedAt,
       };
@@ -241,7 +279,7 @@ export function tvView(s: GameState, now: number): TvView {
             friendWords: s.settings.friendWords,
           }
         : null,
-    pattern: r && s.phase !== "lobby" ? (r.endedAt ? maskAnswer(r.answer, new Set("ABCDEFGHIJKLMNOPQRSTUVWXYZ")) : maskAnswer(r.answer, new Set())) : null,
+    pattern: r && s.phase !== "lobby" && r.mode !== "emoji" ? (r.endedAt ? maskAnswer(r.answer, new Set("ABCDEFGHIJKLMNOPQRSTUVWXYZ")) : maskAnswer(r.answer, new Set())) : null,
     rivals: s.phase === "lobby" ? [] : rivalsFor(s, now, true),
     reactions: s.reactions.map((x) => ({ id: x.id, emoji: x.emoji, nickname: nameOf(s, x.playerId)!, at: x.at })),
     dareEnabled: s.settings.dareWheel,
@@ -257,7 +295,7 @@ export interface PlayerView extends BaseView {
   role: "player";
   me: { id: string; nickname: string; score: number; rank: number; powerupsLeft: number };
   friendWords: boolean;
-  submission: { answer: string; hint: string; status: string } | null;
+  submission: { answer: string; hint: string; clue: string | null; status: string } | null;
   my: null | {
     state: MyRoundState;
     pattern: MaskCell[] | null;
@@ -269,6 +307,9 @@ export interface PlayerView extends BaseView {
     frozenUntil: number;
     points: number;
     freezeTargets: { id: string; nickname: string }[];
+    /** Emoji Decode: attempts allowed this round, this player's own wrong answers, and letters revealed to them by power-up. */
+    maxAttempts: number;
+    revealedLetters: { position: number; letter: string }[];
   };
 }
 
@@ -292,15 +333,20 @@ export function playerView(s: GameState, playerId: string, now: number): PlayerV
         frozenUntil: 0,
         points: r.endedAt ? r.authorBonus : 0,
         freezeTargets: [],
+        maxAttempts: 0,
+        revealedLetters: [],
       };
     } else if (!pr) {
-      my = { state: "waiting", pattern: null, guessed: [], wrong: [], lives: 0, hint: null, hintUsed: false, frozenUntil: 0, points: 0, freezeTargets: [] };
+      my = { state: "waiting", pattern: null, guessed: [], wrong: [], lives: 0, hint: null, hintUsed: false, frozenUntil: 0, points: 0, freezeTargets: [], maxAttempts: 0, revealedLetters: [] };
     } else {
-      const known = knownLetters(r, pr);
+      const emoji = r.mode === "emoji";
+      const known = emoji ? new Set<string>() : knownLetters(r, pr);
+      const letters = emoji ? answerLetters(r.answer) : [];
       my = {
         state: pr.status,
-        pattern: maskAnswer(r.answer, known),
-        guessed: [...pr.guessed, ...pr.revealed.filter((l) => !pr.guessed.includes(l))],
+        // Emoji Decode never sends a pattern: it would reveal the answer's shape.
+        pattern: emoji ? null : maskAnswer(r.answer, known),
+        guessed: emoji ? [] : [...pr.guessed, ...pr.revealed.filter((l) => !pr.guessed.includes(l))],
         wrong: pr.wrong,
         lives: pr.lives,
         hint: pr.hintUsed || r.endedAt ? r.hint : null,
@@ -313,6 +359,8 @@ export function playerView(s: GameState, playerId: string, now: number): PlayerV
             : r.participants
                 .filter((id) => id !== playerId && r.progress[id]?.status === "playing" && !r.progress[id].frozenOnce)
                 .map((id) => ({ id, nickname: nameOf(s, id)! })),
+        maxAttempts: emoji ? (r.kind === "suddenDeath" ? 1 : EMOJI.attempts) : 0,
+        revealedLetters: emoji ? (pr.revealedPos ?? []).map((position) => ({ position, letter: letters[position] })) : [],
       };
     }
   }
@@ -328,7 +376,7 @@ export function playerView(s: GameState, playerId: string, now: number): PlayerV
       powerupsLeft: me.powerupsLeft,
     },
     friendWords: s.settings.friendWords,
-    submission: sub ? { answer: sub.answer, hint: sub.hint, status: sub.status } : null,
+    submission: sub ? { answer: sub.answer, hint: sub.hint, clue: sub.clue ?? null, status: sub.status } : null,
     my,
   };
 }
@@ -340,9 +388,11 @@ export interface HostView extends BaseView {
   role: "host";
   settings: Settings;
   players: { id: string; nickname: string; score: number; joinedAt: number }[];
-  submissions: { id: string; playerId: string; nickname: string; answer: string; hint: string }[];
+  submissions: { id: string; playerId: string; nickname: string; answer: string; hint: string; clue: string | null }[];
   insideJokes: { id: string; answer: string; hint: string }[] | null;
   insideJokeCount: number;
+  insideClues: { id: string; clue: string; answer: string; alternates: string[] }[] | null;
+  insideClueCount: number;
   customDares: { id: string; text: string }[];
   progress: { playing: number; solved: number; out: number; total: number } | null;
   rivals: RivalEntry[];
@@ -370,10 +420,13 @@ export function hostView(s: GameState, now: number): HostView {
     submissions: inLobby
       ? s.submissions
           .filter((x) => x.status === "pending")
-          .map((x) => ({ id: x.id, playerId: x.playerId, nickname: nameOf(s, x.playerId)!, answer: x.answer, hint: x.hint }))
+          .map((x) => ({ id: x.id, playerId: x.playerId, nickname: nameOf(s, x.playerId)!, answer: x.answer, hint: x.hint, clue: x.clue ?? null }))
       : [],
     insideJokes: inLobby ? s.insideJokes.map((j) => ({ id: j.id, answer: j.answer, hint: j.hint })) : null,
     insideJokeCount: s.insideJokes.length,
+    // The host's own inside clues are only listed before the game starts, so answers never show mid-game.
+    insideClues: inLobby ? s.insideClues.map((j) => ({ id: j.id, clue: j.clue, answer: j.answer, alternates: j.alternates })) : null,
+    insideClueCount: s.insideClues.length,
     customDares: s.customDares.map((d) => ({ id: d.id, text: d.text })),
     progress,
     rivals: s.phase === "lobby" ? [] : rivalsFor(s, now, true),

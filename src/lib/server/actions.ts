@@ -2,6 +2,31 @@ import "server-only";
 import * as E from "@/lib/game/engine";
 import { type Ctx, GameError, type GameState, type PowerUp, type Settings } from "@/lib/game/types";
 import { validateDare, validateHint, validatePhrase } from "@/lib/moderation";
+import { cleanClue, isEmojiClue } from "@/lib/game/answers";
+
+/** Optional emoji clue: emojis and spaces only. */
+function parseClue(v: unknown, required: boolean): string | undefined {
+  if (v == null || (typeof v === "string" && v.trim() === "")) {
+    if (required) throw new GameError("invalid", "Add an emoji clue (emojis only).");
+    return undefined;
+  }
+  if (typeof v !== "string" || !isEmojiClue(v)) throw new GameError("invalid", "Emoji clues can only contain emojis and spaces (up to 12 emojis).");
+  return cleanClue(v);
+}
+
+/** Accepted alternates: an array or a comma-separated string, up to 6. */
+function parseAlternates(v: unknown): string[] {
+  const list = Array.isArray(v) ? v : typeof v === "string" ? v.split(",") : [];
+  const out: string[] = [];
+  for (const raw of list) {
+    if (typeof raw !== "string" || !raw.trim()) continue;
+    const alt = validatePhrase(raw, "pg13");
+    if (!alt.ok) throw new GameError("invalid", `Alternate "${String(raw).slice(0, 40)}": ${alt.error}`);
+    if (!out.includes(alt.value)) out.push(alt.value);
+  }
+  if (out.length > 6) throw new GameError("invalid", "Up to 6 alternate answers.");
+  return out;
+}
 
 const str = (v: unknown) => (typeof v === "string" ? v : "");
 
@@ -26,6 +51,20 @@ export function hostAction(s: GameState, ctx: Ctx, body: Record<string, unknown>
     case "removeInsideJoke":
       if (s.phase !== "lobby") throw new GameError("wrong_phase", "Inside jokes are locked once the game starts.", 409);
       return E.removeInsideJoke(s, str(body.id));
+    case "addInsideClue": {
+      if (s.phase !== "lobby") throw new GameError("wrong_phase", "Add inside jokes before the game starts.", 409);
+      const clue = parseClue(body.clue, true)!;
+      const a = validatePhrase(body.answer, "pg13");
+      if (!a.ok) throw new GameError("invalid", a.error);
+      E.addInsideClue(s, clue, a.value, parseAlternates(body.alternates), ctx);
+      if (!s.settings.categories.includes("inside")) s.settings.categories = [...s.settings.categories, "inside"];
+      return;
+    }
+    case "removeInsideClue":
+      if (s.phase !== "lobby") throw new GameError("wrong_phase", "Inside jokes are locked once the game starts.", 409);
+      return E.removeInsideClue(s, str(body.id));
+    case "dropHint":
+      return E.dropHint(s, ctx);
     case "addDare": {
       const d = validateDare(body.text, "pg13"); // content level is applied when dares are used
       if (!d.ok) throw new GameError("invalid", d.error);
@@ -68,6 +107,8 @@ export function playerAction(s: GameState, ctx: Ctx, playerId: string, body: Rec
       return E.guess(s, playerId, body.letter, ctx);
     case "hint":
       return E.takeHint(s, playerId, ctx);
+    case "answer":
+      return E.submitAnswer(s, playerId, body.answer, ctx);
     case "powerup": {
       const type = str(body.type) as PowerUp;
       if (!["freeze", "reveal", "extraLife"].includes(type)) throw new GameError("bad_powerup", "Unknown power-up.");
@@ -80,7 +121,8 @@ export function playerAction(s: GameState, ctx: Ctx, playerId: string, body: Rec
       if (!a.ok) throw new GameError("invalid", a.error);
       const h = validateHint(body.hint, s.settings.content, a.value);
       if (!h.ok) throw new GameError("invalid", h.error);
-      return E.submitWord(s, playerId, a.value, h.value, ctx);
+      const clue = parseClue(body.clue, s.settings.mode === "emoji");
+      return E.submitWord(s, playerId, a.value, h.value, ctx, clue);
     }
     case "pickCategory":
       return E.pickCategory(s, playerId, body.category, ctx);

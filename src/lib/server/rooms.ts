@@ -2,7 +2,7 @@ import "server-only";
 import { db } from "./db";
 import { hashToken, newRoomCode, newToken, tokenMatches } from "./auth";
 import { broadcastSync } from "./realtime";
-import { createGame, tick } from "@/lib/game/engine";
+import { createGame, tick, upgradeState } from "@/lib/game/engine";
 import { serverCtx } from "@/lib/game/ctx";
 import { type Ctx, GameError, type GameState } from "@/lib/game/types";
 
@@ -52,7 +52,7 @@ export async function withRoom<T>(
       select id, code, host_token_hash, state from public.rooms where code = ${code} and (ended_at is null or ended_at > now() - interval '24 hours') for update`;
     if (!rows.length) throw new GameError("room_not_found", "We couldn't find that room code.", 404);
     const row = rows[0];
-    const state = row.state;
+    const state = upgradeState(row.state);
     seqBefore = state.seq;
     const ctx = serverCtx();
     tick(state, ctx);
@@ -75,6 +75,7 @@ export async function withRoom<T>(
 /** Read the state, applying any due time-based transitions. */
 export async function loadRoom(code: string): Promise<{ state: GameState; hostTokenHash: string; now: number }> {
   const row = await readRoom(code);
+  row.state = upgradeState(row.state);
   const probe = structuredClone(row.state);
   const ctx = serverCtx();
   if (tick(probe, ctx)) {
