@@ -1,7 +1,7 @@
 import "server-only";
 import * as E from "@/lib/game/engine";
 import { type Ctx, GameError, type GameState, type PowerUp, type Settings } from "@/lib/game/types";
-import { validateDare, validateHint, validatePhrase, validateQuestion } from "@/lib/moderation";
+import { validateDare, validateHint, validatePhrase, validatePrompt, validateQuestion } from "@/lib/moderation";
 import { cleanClue, isEmojiClue } from "@/lib/game/answers";
 
 /** Optional emoji clue: emojis and spaces only. */
@@ -76,6 +76,21 @@ export function hostAction(s: GameState, ctx: Ctx, body: Record<string, unknown>
       return E.removeCustomQuestion(s, str(body.id));
     case "removeQuestionSub":
       return E.removeQuestionSub(s, str(body.id));
+    case "addCustomPrompt": {
+      if (s.phase !== "lobby" && s.phase !== "ended") throw new GameError("wrong_phase", "Add questions before the game starts.", 409);
+      const q = validatePrompt(body.text, "pg13"); // the game's content level is applied when questions are used
+      if (!q.ok) throw new GameError("invalid", q.error);
+      return E.addCustomPrompt(s, q.value, ctx);
+    }
+    case "removeCustomPrompt":
+      if (s.phase !== "lobby" && s.phase !== "ended") throw new GameError("wrong_phase", "Questions are locked once the game starts.", 409);
+      return E.removeCustomPrompt(s, str(body.id));
+    case "removePromptSub":
+      return E.removePromptSub(s, str(body.id));
+    case "skipAnswer":
+      return E.skipWwiAnswer(s, ctx);
+    case "removeAnswer":
+      return E.removeWwiAnswer(s, str(body.answerId), ctx);
     case "addDare": {
       const d = validateDare(body.text, "pg13"); // content level is applied when dares are used
       if (!d.ok) throw new GameError("invalid", d.error);
@@ -127,6 +142,15 @@ export function playerAction(s: GameState, ctx: Ctx, playerId: string, body: Rec
       if (!q.ok) throw new GameError("invalid", q.error);
       return E.submitQuestion(s, playerId, q.value, ctx);
     }
+    case "submitPrompt": {
+      const q = validatePrompt(body.text, s.settings.content);
+      if (!q.ok) throw new GameError("invalid", q.error);
+      return E.submitPrompt(s, playerId, q.value, ctx);
+    }
+    case "writeAnswer":
+      return E.submitWwiAnswer(s, playerId, body.text, ctx);
+    case "wwiGuess":
+      return E.wwiGuess(s, playerId, body.targetId, ctx);
     case "powerup": {
       const type = str(body.type) as PowerUp;
       if (!["freeze", "reveal", "extraLife"].includes(type)) throw new GameError("bad_powerup", "Unknown power-up.");

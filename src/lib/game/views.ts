@@ -4,10 +4,11 @@
 import { emojiFor, labelFor } from "@/data/categories";
 import { computeAwards, standings, type Award, type Standing } from "./awards";
 import { knownLetters, remainingMs } from "./engine";
-import { EMOJI, MLT, STARTING_LIVES } from "./scoring";
+import { EMOJI, MLT, STARTING_LIVES, WWI } from "./scoring";
+import { estimateMinutes } from "./estimate";
 import { answerLetters } from "./answers";
 import { maskAnswer, solvedFraction, type MaskCell } from "./text";
-import type { CategoryId, GameMode, GameState, PackId, Phase, Round, RoundMode, Settings, WwiPackId } from "./types";
+import type { CategoryId, GameMode, GameState, PackId, Phase, Round, RoundMode, Settings, WwiPackId, WwiResult, WwiStage } from "./types";
 
 export interface TimerView {
   deadline: number;
@@ -51,6 +52,39 @@ export interface RevealView {
   authorBonus: number;
   stumpedCount: number;
   sdWinnerId: string | null;
+  /** Who Wrote It?: the answers revealed this round (never the ones that weren't shown). */
+  wwi: { answers: WwiRevealedView[]; noAnswers: boolean } | null;
+}
+
+export interface WwiRevealedView {
+  text: string;
+  authorId: string;
+  authorName: string;
+  /** Totals only — never who guessed whom. */
+  correct: number;
+  wrong: number;
+  guessers: number;
+}
+
+/**
+ * Who Wrote It? round state shared by every screen. Deliberately has NO author
+ * for the answer on screen, and no per-player submit/guess status — only totals.
+ */
+export interface WwiPublicView {
+  stage: WwiStage;
+  /** Writing: answers in, out of players writing. */
+  submitted: number;
+  writers: number;
+  /** "Answer index of total". */
+  index: number;
+  total: number;
+  /** Guessing: the answer on screen (without its author) and how many have guessed, out of how many can. */
+  answer: string | null;
+  guessed: number;
+  guessers: number;
+  /** Answer reveal: the answer just revealed, with its author. */
+  revealed: WwiRevealedView | null;
+  noAnswers: boolean;
 }
 
 export interface CategoryOption {
@@ -96,6 +130,8 @@ interface BaseView {
   mixedModes: RoundMode[];
   /** A Most Likely To-only game is waiting for at least 3 active players. */
   hold: "needPlayers" | null;
+  /** How many players the held mode needs. */
+  holdMin: number | null;
   gameNumber: number;
   roundsPlayed: number;
   totalRounds: number;
@@ -109,9 +145,10 @@ interface BaseView {
     hostHints: string[];
     /** Players finished (solved, out, or voted) / players in the round. */
     answered: { done: number; total: number };
-    /** Most Likely To: the question and who can be voted for (public). */
+    /** Most Likely To / Who Wrote It?: the question. Most Likely To: who can be voted for (public). */
     question: string | null;
     candidates: { id: string; nickname: string }[];
+    wwi: WwiPublicView | null;
     number: number;
     kind: Round["kind"];
     sdAttempt: number;
@@ -138,6 +175,31 @@ export function categoryOption(id: CategoryId | PackId | WwiPackId): CategoryOpt
 
 function nameOf(s: GameState, id: string | null) {
   return id ? (s.players.find((p) => p.id === id)?.nickname ?? "Someone") : null;
+}
+
+function revealedView(s: GameState, x: { text: string; authorId: string; correct: number; wrong: number; guessers: number }): WwiRevealedView {
+  return { text: x.text, authorId: x.authorId, authorName: nameOf(s, x.authorId)!, correct: x.correct, wrong: x.wrong, guessers: x.guessers };
+}
+
+function wwiPublic(s: GameState, r: Round): WwiPublicView | null {
+  const w = r.wwi;
+  if (r.mode !== "wwi" || !w) return null;
+  const inRound = r.participants.filter((id) => r.progress[id] && s.players.some((p) => p.id === id && !p.removed));
+  const cur = !r.endedAt && w.stage === "guessing" ? w.current : null;
+  const guessers = cur ? inRound.filter((id) => id !== cur.authorId) : [];
+  const last = w.revealed[w.revealed.length - 1];
+  return {
+    stage: w.stage,
+    submitted: inRound.filter((id) => w.answers[id]).length,
+    writers: inRound.length,
+    index: Math.min(w.total, w.revealed.length + (cur ? 1 : 0)) || (w.total ? 1 : 0),
+    total: w.total,
+    answer: cur ? cur.text : null,
+    guessed: cur ? guessers.filter((id) => (cur.guesses[id]?.length ?? 0) > 0).length : 0,
+    guessers: guessers.length,
+    revealed: !r.endedAt && w.stage === "answerReveal" && last ? revealedView(s, last) : null,
+    noAnswers: w.noAnswers,
+  };
 }
 
 function revealStats(s: GameState, r: Round) {
@@ -174,6 +236,7 @@ function base(s: GameState, now: number): BaseView {
     mode: s.settings.mode ?? "hangman",
     mixedModes: s.settings.mixedModes ?? ["hangman", "emoji"],
     hold: s.hold ?? null,
+    holdMin: s.hold ? (s.holdMin ?? MLT.minPlayers) : null,
     gameNumber: s.gameNumber,
     roundsPlayed: s.roundsPlayed,
     totalRounds: s.settings.rounds,
@@ -184,11 +247,16 @@ function base(s: GameState, now: number): BaseView {
           mode: r.mode,
           clue: r.mode === "emoji" ? r.clue : null,
           hostHints: r.mode === "emoji" ? r.hostHints : [],
-          answered: {
-            done: r.participants.filter((id) => r.progress[id] && r.progress[id].status !== "playing").length,
-            total: r.participants.filter((id) => r.progress[id]).length,
-          },
-          question: r.mode === "mlt" ? (r.question ?? null) : null,
+          answered: (() => {
+            const w = wwiPublic(s, r);
+            if (w) return w.stage === "writing" ? { done: w.submitted, total: w.writers } : { done: w.guessed, total: w.guessers };
+            return {
+              done: r.participants.filter((id) => r.progress[id] && r.progress[id].status !== "playing").length,
+              total: r.participants.filter((id) => r.progress[id]).length,
+            };
+          })(),
+          question: r.mode === "mlt" || r.mode === "wwi" ? (r.question ?? null) : null,
+          wwi: wwiPublic(s, r),
           candidates:
             r.mode === "mlt"
               ? (r.candidates ?? []).filter((id) => s.players.some((p) => p.id === id && !p.removed)).map((id) => ({ id, nickname: nameOf(s, id)! }))
@@ -212,7 +280,7 @@ function base(s: GameState, now: number): BaseView {
       showRound && ended
         ? {
             mode: r.mode,
-            answer: r.mode === "mlt" ? (r.question ?? "") : r.answer,
+            answer: r.mode === "mlt" || r.mode === "wwi" ? (r.question ?? "") : r.answer,
             ...revealStats(s, r),
             totals:
               r.mode === "mlt" && r.totals
@@ -228,6 +296,7 @@ function base(s: GameState, now: number): BaseView {
             authorBonus: r.authorBonus,
             stumpedCount: r.stumpedCount,
             sdWinnerId: r.sdWinnerId,
+            wwi: r.mode === "wwi" && r.wwi ? { answers: r.wwi.revealed.map((x) => revealedView(s, x)), noAnswers: r.wwi.noAnswers } : null,
           }
         : null,
     loserPick:
@@ -265,7 +334,16 @@ function base(s: GameState, now: number): BaseView {
 // ---------------------------------------------------------------------------
 export interface TvView extends BaseView {
   role: "tv";
-  lobby: { players: { id: string; nickname: string }[]; submissions: number; questions: number; friendWords: boolean } | null;
+  lobby: {
+    players: { id: string; nickname: string }[];
+    submissions: number;
+    questions: number;
+    /** Who Wrote It? questions players have submitted. */
+    prompts: number;
+    friendWords: boolean;
+    /** Estimated game length with the current settings. */
+    estimateMin: number;
+  } | null;
   pattern: MaskCell[] | null; // always blank during a round
   rivals: RivalEntry[];
   reactions: { id: number; emoji: string; nickname: string; at: number }[];
@@ -282,6 +360,10 @@ export function rivalsFor(s: GameState, now: number, disguiseAuthor: boolean): R
         if (r && disguiseAuthor && r.authorId === p.id && !r.endedAt)
           return { id: p.id, nickname: p.nickname, lives: r.mode === "emoji" ? EMOJI.attempts : STARTING_LIVES, pct: 0, status: "playing", frozen: false };
         return { id: p.id, nickname: p.nickname, lives: 0, pct: 0, status: "waiting", frozen: false };
+      }
+      if (r.mode === "wwi") {
+        // Never per-player writing/guessing status: it would hint at who wrote the answer on screen.
+        return { id: p.id, nickname: p.nickname, lives: 0, pct: 0, status: "playing", frozen: pr.frozenUntil > now && !r.endedAt };
       }
       if (r.mode === "mlt") {
         // Who has voted is public ("N votes in"); who they voted for never is.
@@ -311,7 +393,9 @@ export function tvView(s: GameState, now: number): TvView {
             players: s.players.filter((p) => !p.removed).map((p) => ({ id: p.id, nickname: p.nickname })),
             submissions: s.submissions.filter((x) => x.status === "pending").length,
             questions: s.questionSubs.filter((x) => x.status === "pending").length,
+            prompts: s.promptSubs.filter((x) => x.status === "pending").length,
             friendWords: s.settings.friendWords,
+            estimateMin: estimateMinutes(s.settings),
           }
         : null,
     pattern: r && s.phase !== "lobby" && r.mode !== "emoji" ? (r.endedAt ? maskAnswer(r.answer, new Set("ABCDEFGHIJKLMNOPQRSTUVWXYZ")) : maskAnswer(r.answer, new Set())) : null,
@@ -353,11 +437,64 @@ export interface PlayerView extends BaseView {
     peek: { names: string[]; votes: number } | null;
     voteReset: boolean;
     voteResult: "correct" | "wrong" | "missed" | null;
+    /** Who Wrote It?: this player's own view only. */
+    wwi: MyWwi | null;
   };
   questionSub: { text: string; status: string } | null;
+  /** Who Wrote It? question this player submitted in the lobby. */
+  promptSub: { text: string; status: string } | null;
 }
 
-const NO_MLT = { doubleVote: false, peek: null, voteReset: false, voteResult: null } as const;
+/**
+ * A player's private Who Wrote It? state. Only ever built for that player.
+ * Deliberately NOT included: who anyone else picked, or whether this player's
+ * pick was right before the reveal.
+ */
+export interface MyWwi {
+  /** Writing: whether their answer is locked in, and its text (their own). */
+  submitted: boolean;
+  myAnswer: string | null;
+  /** Guessing: their own answer is on screen — they sit this one out. */
+  isAuthor: boolean;
+  /** Their own shuffled choices (Eliminate Two removes two wrong names). */
+  choices: { id: string; nickname: string }[];
+  picks: string[];
+  pickLimit: number;
+  doubleGuess: boolean;
+  eliminated: boolean;
+  /** Answer reveal: how their guess went, or how many players their answer fooled. */
+  result: WwiResult | null;
+  fooled: number | null;
+}
+
+const NO_MLT = { doubleVote: false, peek: null, voteReset: false, voteResult: null, wwi: null } as const;
+
+function myWwi(s: GameState, r: Round, playerId: string): MyWwi {
+  const w = r.wwi!;
+  const live = !r.endedAt;
+  const cur = live && w.stage === "guessing" ? w.current : null;
+  const isAuthor = !!cur && cur.authorId === playerId;
+  const removedNames = new Set(cur ? (cur.eliminated[playerId] ?? []) : []);
+  const last = w.revealed[w.revealed.length - 1];
+  const showResult = live && w.stage === "answerReveal";
+  return {
+    submitted: !!w.answers[playerId],
+    myAnswer: w.answers[playerId]?.text ?? null,
+    isAuthor,
+    choices:
+      cur && !isAuthor
+        ? (cur.orders[playerId] ?? [])
+            .filter((id) => !removedNames.has(id) && s.players.some((p) => p.id === id && !p.removed))
+            .map((id) => ({ id, nickname: nameOf(s, id)! }))
+        : [],
+    picks: cur && !isAuthor ? (cur.guesses[playerId] ?? []) : [],
+    pickLimit: cur?.doubleGuess[playerId] ? 2 : 1,
+    doubleGuess: !!cur?.doubleGuess[playerId],
+    eliminated: removedNames.size > 0,
+    result: showResult ? (w.lastResults[playerId] ?? null) : null,
+    fooled: showResult && last && last.authorId === playerId ? last.wrong : null,
+  };
+}
 
 export function playerView(s: GameState, playerId: string, now: number): PlayerView {
   const b = base(s, now);
@@ -385,6 +522,31 @@ export function playerView(s: GameState, playerId: string, now: number): PlayerV
       };
     } else if (!pr) {
       my = { state: "waiting", pattern: null, guessed: [], wrong: [], lives: 0, hint: null, hintUsed: false, frozenUntil: 0, points: 0, freezeTargets: [], maxAttempts: 0, revealedLetters: [], ...NO_MLT };
+    } else if (r.mode === "wwi" && r.wwi) {
+      const mine = myWwi(s, r, playerId);
+      const canFreeze =
+        !r.endedAt && r.wwi.stage === "guessing" && !!r.wwi.current && !mine.isAuthor && remainingMs(r, now) > WWI.freezeCutoffMs;
+      my = {
+        state: pr.status,
+        pattern: null,
+        guessed: [],
+        wrong: [],
+        lives: 0,
+        hint: null,
+        hintUsed: false,
+        frozenUntil: r.endedAt || r.wwi.stage !== "guessing" ? 0 : pr.frozenUntil,
+        points: pr.points,
+        // Everyone in the question, including the author and anyone who already guessed, so the list never hints at the author.
+        freezeTargets: canFreeze
+          ? r.participants
+              .filter((id) => id !== playerId && r.progress[id] && !r.progress[id].frozenOnce && s.players.some((p) => p.id === id && !p.removed))
+              .map((id) => ({ id, nickname: nameOf(s, id)! }))
+          : [],
+        maxAttempts: 0,
+        revealedLetters: [],
+        ...NO_MLT,
+        wwi: mine,
+      };
     } else if (r.mode === "mlt") {
       const canFreeze = !r.endedAt && r.kind !== "suddenDeath" && remainingMs(r, now) > MLT.freezeCutoffMs;
       my = {
@@ -408,6 +570,7 @@ export function playerView(s: GameState, playerId: string, now: number): PlayerV
         peek: pr.peek ? { names: pr.peek.leaderIds.map((id) => nameOf(s, id)!), votes: pr.peek.votes } : null,
         voteReset: !!pr.voteReset,
         voteResult: r.endedAt && r.endReason !== "skipped" ? (pr.voteResult ?? null) : null,
+        wwi: null,
       };
     } else {
       const emoji = r.mode === "emoji";
@@ -453,6 +616,10 @@ export function playerView(s: GameState, playerId: string, now: number): PlayerV
       const q = s.phase === "lobby" ? s.questionSubs.find((x) => x.playerId === playerId && x.status !== "used") : undefined;
       return q ? { text: q.text, status: q.status } : null;
     })(),
+    promptSub: (() => {
+      const q = s.phase === "lobby" ? s.promptSubs.find((x) => x.playerId === playerId && x.status !== "used") : undefined;
+      return q ? { text: q.text, status: q.status } : null;
+    })(),
     my,
   };
 }
@@ -473,6 +640,17 @@ export interface HostView extends BaseView {
   customQuestions: { id: string; text: string }[] | null;
   customQuestionCount: number;
   questionSubs: { id: string; text: string }[];
+  /** Who Wrote It?: host's questions, players' questions for review (anonymous). */
+  customPrompts: { id: string; text: string }[] | null;
+  customPromptCount: number;
+  promptSubs: { id: string; text: string }[];
+  /**
+   * Who Wrote It?: the answer on screen and the selected answers still to come —
+   * text only, NEVER who wrote them — so the host can skip or remove one first.
+   */
+  wwiCurrent: { id: string; text: string } | null;
+  wwiUpcoming: { id: string; text: string }[];
+  estimateMin: number;
   customDares: { id: string; text: string }[];
   progress: { playing: number; solved: number; out: number; total: number } | null;
   rivals: RivalEntry[];
@@ -483,7 +661,7 @@ export function hostView(s: GameState, now: number): HostView {
   const r = s.round;
   const inLobby = s.phase === "lobby";
   let progress: HostView["progress"] = null;
-  if (r && s.phase === "round") {
+  if (r && s.phase === "round" && r.mode !== "wwi") {
     const list = r.participants.map((id) => r.progress[id]).filter(Boolean);
     progress = {
       playing: list.filter((p) => p.status === "playing").length,
@@ -510,8 +688,26 @@ export function hostView(s: GameState, now: number): HostView {
     customQuestions: inLobby || s.phase === "ended" ? s.customQuestions.map((q) => ({ id: q.id, text: q.text })) : null,
     customQuestionCount: s.customQuestions.length,
     questionSubs: inLobby ? s.questionSubs.filter((q) => q.status === "pending").map((q) => ({ id: q.id, text: q.text })) : [],
+    customPrompts: inLobby || s.phase === "ended" ? s.customPrompts.map((q) => ({ id: q.id, text: q.text })) : null,
+    customPromptCount: s.customPrompts.length,
+    promptSubs: inLobby ? s.promptSubs.filter((q) => q.status === "pending").map((q) => ({ id: q.id, text: q.text })) : [],
+    ...hostWwi(s),
+    estimateMin: estimateMinutes(s.settings),
     customDares: s.customDares.map((d) => ({ id: d.id, text: d.text })),
     progress,
     rivals: s.phase === "lobby" ? [] : rivalsFor(s, now, true),
+  };
+}
+
+function hostWwi(s: GameState): Pick<HostView, "wwiCurrent" | "wwiUpcoming"> {
+  const r = s.round;
+  const w = r?.wwi;
+  if (s.phase !== "round" || !r || r.mode !== "wwi" || !w || r.endedAt) return { wwiCurrent: null, wwiUpcoming: [] };
+  const textOf = (answerId: string) => Object.values(w.answers).find((a) => a.id === answerId)?.text ?? "";
+  const cur = w.stage === "guessing" ? w.current : null;
+  const upcoming = Math.max(0, w.total - w.revealed.length - (w.current ? 1 : 0));
+  return {
+    wwiCurrent: cur ? { id: cur.answerId, text: cur.text } : null,
+    wwiUpcoming: w.stage === "writing" ? [] : w.queue.slice(0, upcoming).map((id) => ({ id, text: textOf(id) })),
   };
 }

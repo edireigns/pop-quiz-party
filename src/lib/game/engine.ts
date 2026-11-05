@@ -4,8 +4,9 @@
 import { WORD_BANK } from "@/data/words";
 import { CLUE_BANK } from "@/data/clues";
 import { QUESTION_BANK, questionText } from "@/data/questions";
+import { PROMPT_BANK } from "@/data/prompts";
 import { startersFor } from "@/data/dares";
-import { isBlocked } from "@/lib/moderation";
+import { isBlocked, validateWwiAnswer } from "@/lib/moderation";
 import { REACTION_EMOJIS } from "@/data/categories";
 export { REACTION_EMOJIS };
 import { answerLetters, clueKey, hostHintText, isCorrectAnswer, MAX_HOST_HINTS, normalizeAnswer } from "./answers";
@@ -15,6 +16,7 @@ import {
   EMOJI,
   emojiPoints,
   MLT,
+  WWI,
   FREEZE_MS,
   LOSER_PICK_MS,
   MAX_PLAYERS,
@@ -57,6 +59,8 @@ import {
   type Settings,
   TIMER_OPTIONS,
   type WordEntry,
+  type WwiResult,
+  type WwiRound,
   type WordSource,
 } from "./types";
 
@@ -152,20 +156,32 @@ export function includesMlt(s: GameState): boolean {
   return s.settings.mode === "mlt" || (s.settings.mode === "mixed" && mixedList(s).includes("mlt"));
 }
 
+/** True if the game's rounds can include Who Wrote It?. */
+export function includesWwi(s: GameState): boolean {
+  return s.settings.mode === "wwi" || (s.settings.mode === "mixed" && mixedList(s).includes("wwi"));
+}
+
+/** Players a round of this mode needs (Most Likely To 3, Who Wrote It? 4). */
+export function minPlayersFor(mode: RoundMode): number {
+  return mode === "mlt" ? MLT.minPlayers : mode === "wwi" ? WWI.minPlayers : 1;
+}
+
 /**
  * Which kind of round number `n` is. Mixed rotates through the chosen modes in
  * order (default Hangman, Emoji Decode — the original Mixed). Most Likely To
- * rounds are skipped in Mixed when fewer than 3 players are active.
+ * (3+) and Who Wrote It? (4+) rounds are skipped in Mixed when too few players
+ * are active.
  */
 export function roundModeFor(s: GameState, n: number): RoundMode {
   const mode = s.settings.mode ?? "hangman";
   if (mode !== "mixed") return mode;
   const list = mixedList(s);
   const m = list[(n - 1) % list.length];
-  if (m === "mlt" && activePlayers(s).length < MLT.minPlayers) {
+  const count = activePlayers(s).length;
+  if (count < minPlayersFor(m)) {
     for (let k = 1; k < list.length; k++) {
       const alt = list[(n - 1 + k) % list.length];
-      if (alt !== "mlt") return alt;
+      if (count >= minPlayersFor(alt)) return alt;
     }
     return "hangman";
   }
@@ -174,15 +190,17 @@ export function roundModeFor(s: GameState, n: number): RoundMode {
 
 /**
  * Sudden Death: games with word rounds keep Hangman (or Emoji Decode when that's
- * the only word mode); a Most Likely To-only game votes on the tied players.
+ * the only word mode). Games without word rounds (Most Likely To and/or Who
+ * Wrote It?) have the other players vote on the tied players.
  */
 export function suddenDeathMode(s: GameState): RoundMode {
   if (s.settings.mode === "emoji") return "emoji";
-  if (s.settings.mode === "mlt") return "mlt";
+  if (s.settings.mode === "mlt" || s.settings.mode === "wwi") return "mlt";
   if (s.settings.mode === "mixed") {
     const list = mixedList(s);
     if (list.includes("hangman")) return "hangman";
     if (list.includes("emoji")) return "emoji";
+    return "mlt";
   }
   return "hangman";
 }
@@ -410,6 +428,7 @@ export function removePlayer(s: GameState, playerId: string, ctx: Ctx) {
   p.removed = true;
   for (const sub of s.submissions) if (sub.playerId === playerId && sub.status === "pending") sub.status = "removed";
   for (const q of s.questionSubs) if (q.playerId === playerId && q.status === "pending") q.status = "removed";
+  for (const q of s.promptSubs) if (q.playerId === playerId && q.status === "pending") q.status = "removed";
   if (s.phase === "round" && s.round) {
     const r = s.round;
     r.participants = r.participants.filter((id) => id !== playerId);
@@ -437,6 +456,7 @@ export function removePlayer(s: GameState, playerId: string, ctx: Ctx) {
         endRound(s, ctx, "sdWinner");
       }
     }
+    if (r.mode === "wwi" && r.wwi) wwiDropPlayer(s, r.wwi, playerId, ctx);
     if (s.suddenDeath) s.suddenDeath.playerIds = s.suddenDeath.playerIds.filter((id) => id !== playerId);
     checkRoundComplete(s, ctx);
   } else if (s.suddenDeath) {
@@ -702,8 +722,8 @@ export function availablePacks(s: GameState): PackId[] {
 }
 
 /** Loser Picks options for a round of this mode. */
-export function availableChoices(s: GameState, mode: RoundMode): (CategoryId | PackId)[] {
-  return mode === "mlt" ? availablePacks(s) : availableCategories(s, mode);
+export function availableChoices(s: GameState, mode: RoundMode): (CategoryId | PackId | WwiPackId)[] {
+  return mode === "mlt" ? availablePacks(s) : mode === "wwi" ? availableWwiPacks(s) : availableCategories(s, mode);
 }
 
 export function chooseQuestion(s: GameState, pack: PackId, ctx: Ctx): { text: string; pack: PackId } {
@@ -724,7 +744,7 @@ function friendQuestionAvailable(s: GameState, roundNumber: number) {
 }
 
 function friendWordAvailable(s: GameState, roundNumber: number, mode: RoundMode = roundModeFor(s, roundNumber)) {
-  if (mode === "mlt") return null; // Most Likely To uses friend-written questions instead
+  if (mode === "mlt" || mode === "wwi") return null; // question modes use friend-written questions instead
   if (!s.settings.friendWords || !s.friendRoundPlan.includes(roundNumber)) return null;
   if (activePlayers(s).length < 2) return null;
   const pending = s.submissions.filter(
@@ -744,8 +764,15 @@ export function startGame(s: GameState, ctx: Ctx) {
   if (activePlayers(s).length < 1) throw new GameError("no_players", "Wait for at least one player to join.", 409);
   if (s.settings.mode === "mlt" && activePlayers(s).length < MLT.minPlayers)
     throw new GameError("need_players", "Most Likely To needs at least 3 players. Wait for more friends to join.", 409);
+  if (s.settings.mode === "wwi" && activePlayers(s).length < WWI.minPlayers)
+    throw new GameError("need_players", "Who Wrote It? needs at least 4 players. Wait for more friends to join.", 409);
   s.hold = null;
+  s.holdMin = null;
   s.questionRoundPlan = [];
+  s.wwiRoundPlan = [];
+  s.wwiShownCount = {};
+  // Everyone here at the start can appear as a "who wrote it" choice; late joiners only after writing an answer.
+  s.wwiWriters = activePlayers(s).map((p) => p.id);
   s.history = [];
   s.roundsPlayed = 0;
   s.winnerId = null;
@@ -765,6 +792,13 @@ export function startGame(s: GameState, ctx: Ctx) {
     const pendingQs = s.questionSubs.filter((q) => q.status === "pending" && !getRemoved(s, q.playerId));
     const qCount = Math.min(pendingQs.length, Math.round(mltRounds.length / 3));
     s.questionRoundPlan = shuffle(mltRounds, ctx.random).slice(0, qCount).sort((a, b) => a - b);
+    // Same for Who Wrote It? rounds.
+    const wwiRounds = rounds.filter((n) => roundModeFor(s, n) === "wwi");
+    if (wwiRounds.length) {
+      const pendingPs = s.promptSubs.filter((q) => q.status === "pending" && !getRemoved(s, q.playerId));
+      const pCount = Math.min(pendingPs.length, Math.round(wwiRounds.length / 3));
+      s.wwiRoundPlan = shuffle(wwiRounds, ctx.random).slice(0, pCount).sort((a, b) => a - b);
+    }
   }
   startRound(s, ctx);
 }
@@ -796,6 +830,7 @@ export function startRound(s: GameState, ctx: Ctx, choice?: CategoryId | PackId 
   const mode = roundModeFor(s, n);
   const active = activePlayers(s);
   if (mode === "mlt") return startMltRound(s, ctx, n, kind, (choice as PackId | null | undefined) ?? (s.nextCategory as PackId | null));
+  if (mode === "wwi") return startWwiRound(s, ctx, n, kind, (choice as WwiPackId | null | undefined) ?? (s.nextCategory as WwiPackId | null));
   const category = choice as CategoryId | null | undefined;
 
   let answer: string, hint: string, cat: CategoryId | "friend", source: WordSource;
@@ -883,6 +918,7 @@ function startMltRound(s: GameState, ctx: Ctx, n: number, kind: "normal" | "fina
   if (active.length < MLT.minPlayers) {
     // Most Likely To-only game: hold and tell the host (Mixed skips these rounds instead).
     s.hold = "needPlayers";
+    s.holdMin = MLT.minPlayers;
     if (s.phase === "loserPick" || s.phase === "dare") s.phase = "reveal";
     s.loserPick = null;
     s.dare = null;
@@ -1146,6 +1182,8 @@ export function activatePowerup(s: GameState, playerId: string, type: PowerUp, t
 
   if (r.mode === "mlt") {
     mltPowerup(s, r, pr, playerId, type, targetId, ctx);
+  } else if (r.mode === "wwi") {
+    wwiPowerup(s, r, playerId, type, targetId, ctx);
   } else if (type === "freeze") {
     if (!targetId || targetId === playerId) throw new GameError("bad_target", "Pick a rival to freeze.");
     const tp = r.progress[targetId];
@@ -1315,6 +1353,7 @@ export function dropHint(s: GameState, ctx: Ctx) {
 export function checkRoundComplete(s: GameState, ctx: Ctx) {
   if (s.phase !== "round" || !s.round) return;
   const r = s.round;
+  if (r.mode === "wwi") return wwiCheckStage(s, ctx);
   const stillPlaying = r.participants.some((id) => r.progress[id]?.status === "playing");
   if (!stillPlaying) endRound(s, ctx, "allDone");
 }
@@ -1327,7 +1366,15 @@ export function endRound(s: GameState, ctx: Ctx, reason: NonNullable<Round["endR
   r.endedAt = ctx.now;
   r.endReason = reason;
 
-  if (reason === "skipped") {
+  if (r.mode === "wwi" && r.wwi) {
+    wwiFinish(s, r.wwi);
+    // A question skipped before any author was revealed: no points, nothing recorded.
+    if (reason === "skipped" && r.wwi.revealed.length === 0) {
+      s.phase = "reveal";
+      bump(s);
+      return;
+    }
+  } else if (reason === "skipped") {
     for (const id of r.participants) {
       const pr = r.progress[id];
       const p = s.players.find((x) => x.id === id);
@@ -1350,7 +1397,7 @@ export function endRound(s: GameState, ctx: Ctx, reason: NonNullable<Round["endR
 
   if (r.mode === "mlt") scoreVotes(s, r, ctx);
 
-  if (r.kind !== "suddenDeath" && r.mode !== "mlt") {
+  if (r.kind !== "suddenDeath" && r.mode !== "mlt" && r.mode !== "wwi") {
     const failed = r.participants.filter((id) => r.progress[id] && r.progress[id].status !== "solved").length;
     r.stumpedCount = failed;
     if (r.source === "friend" && r.authorId && !getRemoved(s, r.authorId)) {
@@ -1383,7 +1430,7 @@ export function endRound(s: GameState, ctx: Ctx, reason: NonNullable<Round["endR
       const pr = r.progress[p.id];
       results[p.id] = {
         points: pr ? pr.points : p.id === r.authorId ? r.authorBonus : 0,
-        solved: r.mode === "mlt" ? pr?.voteResult === "correct" : pr?.status === "solved",
+        solved: r.mode === "mlt" ? pr?.voteResult === "correct" : r.mode === "wwi" ? (pr?.wwiCorrect ?? 0) > 0 : pr?.status === "solved",
         solveMs: pr?.solveMs ?? null,
         wrong: pr?.wrong.length ?? 0,
         hint: pr?.hintUsed ?? false,
@@ -1395,7 +1442,7 @@ export function endRound(s: GameState, ctx: Ctx, reason: NonNullable<Round["endR
       mode: r.mode,
       number: r.number,
       kind: r.kind,
-      answer: r.mode === "mlt" ? (r.question ?? "") : r.answer,
+      answer: r.mode === "mlt" || r.mode === "wwi" ? (r.question ?? "") : r.answer,
       category: r.category,
       source: r.source,
       authorId: r.authorId,
@@ -1439,7 +1486,8 @@ export function resume(s: GameState, ctx: Ctx) {
 export function tick(s: GameState, ctx: Ctx): boolean {
   const before = s.seq;
   if (s.phase === "round" && s.round && !s.paused && ctx.now >= s.round.deadline) {
-    endRound(s, ctx, "timer");
+    if (s.round.mode === "wwi" && s.round.wwi) wwiAdvance(s, ctx);
+    else endRound(s, ctx, "timer");
   } else if (s.phase === "loserPick" && s.loserPick && ctx.now >= s.loserPick.deadline) {
     resolveLoserPick(s, null, ctx);
   } else if (s.phase === "dare" && s.dare && s.dare.status === "waiting" && ctx.now >= s.dare.autoSpinAt) {
@@ -1453,8 +1501,12 @@ export function next(s: GameState, ctx: Ctx) {
   switch (s.phase) {
     case "lobby":
       return startGame(s, ctx);
-    case "round":
+    case "round": {
+      // Who Wrote It?: Next moves on from the review pause or an author reveal right away.
+      const w = s.round?.mode === "wwi" ? s.round.wwi : undefined;
+      if (w && !s.paused && (w.stage === "review" || w.stage === "answerReveal")) return wwiNextAnswer(s, ctx);
       throw new GameError("round_running", "The round is still running. Use Skip to end it early.", 409);
+    }
     case "loserPick":
       return resolveLoserPick(s, null, ctx);
     case "dare":
@@ -1497,9 +1549,10 @@ function proceedToNextRound(s: GameState, ctx: Ctx) {
   const n = s.roundsPlayed + 1;
   const r = s.round;
   const mode = roundModeFor(s, n);
-  if (mode === "mlt" && activePlayers(s).length < MLT.minPlayers) return startRound(s, ctx); // holds and tells the host
+  if (activePlayers(s).length < minPlayersFor(mode)) return startRound(s, ctx); // holds and tells the host
   const options = availableChoices(s, mode);
-  const friendRound = mode === "mlt" ? !!friendQuestionAvailable(s, n) : !!friendWordAvailable(s, n, mode);
+  const friendRound =
+    mode === "mlt" ? !!friendQuestionAvailable(s, n) : mode === "wwi" ? !!friendPromptAvailable(s, n) : !!friendWordAvailable(s, n, mode);
   if (!friendRound && options.length >= 2 && r && r.kind !== "suddenDeath" && r.endReason !== "skipped") {
     const candidates = r.participants
       .filter((id) => !getRemoved(s, id) && r.progress[id])
@@ -1508,7 +1561,7 @@ function proceedToNextRound(s: GameState, ctx: Ctx) {
       const low = Math.min(...candidates.map((c) => c.pts));
       const losers = candidates.filter((c) => c.pts === low);
       const loser = pick(losers, ctx.random);
-      s.loserPick = { playerId: loser.id, kind: mode === "mlt" ? "pack" : "category", options, deadline: ctx.now + LOSER_PICK_MS };
+      s.loserPick = { playerId: loser.id, kind: mode === "mlt" || mode === "wwi" ? "pack" : "category", options, deadline: ctx.now + LOSER_PICK_MS };
       s.phase = "loserPick";
       s.dare = null;
       bump(s);
@@ -1531,6 +1584,470 @@ export function pickCategory(s: GameState, playerId: string, category: unknown, 
   if (lp.playerId !== playerId) throw new GameError("not_picker", "It's not your pick.", 403);
   if (!lp.options.includes(category as CategoryId)) throw new GameError("bad_category", "Pick one of the listed options.");
   resolveLoserPick(s, category as CategoryId | PackId | WwiPackId, ctx);
+}
+
+// ---------------------------------------------------------------------------
+// Who Wrote It?
+//
+// Each round: everyone writes one anonymous answer to a question, the server
+// picks a few (favoring players shown least), and for each one the others
+// guess who wrote it. SECRET until that answer's reveal: who wrote what, and
+// who guessed whom. Guesses are dropped as soon as the author is revealed and
+// answers that were never shown are dropped when the round ends.
+// ---------------------------------------------------------------------------
+export function promptKey(text: string): string {
+  return text.toLowerCase().replace(/[^a-z0-9]/g, "");
+}
+
+/** Host-written Who Wrote It? question (the "Host's Questions" pack). */
+export function addCustomPrompt(s: GameState, text: string, ctx: Ctx) {
+  if (s.customPrompts.length >= 100) throw new GameError("too_many", "Custom questions are full (100 max).");
+  if (s.customPrompts.some((q) => promptKey(q.text) === promptKey(text)))
+    throw new GameError("duplicate", "That question is already on the list.");
+  s.customPrompts.push({ id: ctx.id(), text });
+  if (!s.settings.wwiPacks.includes("custom")) s.settings.wwiPacks = [...s.settings.wwiPacks, "custom"];
+  bump(s);
+}
+
+export function removeCustomPrompt(s: GameState, id: string) {
+  s.customPrompts = s.customPrompts.filter((q) => q.id !== id);
+  if (s.customPrompts.length === 0 && s.settings.wwiPacks.includes("custom")) {
+    const packs = s.settings.wwiPacks.filter((p) => p !== "custom");
+    s.settings.wwiPacks = packs.length ? packs : [...BUILTIN_WWI_PACKS];
+  }
+  bump(s);
+}
+
+/** A player's friend-written Who Wrote It? question (one each; never shown with their name; no author points). */
+export function submitPrompt(s: GameState, playerId: string, text: string, ctx: Ctx) {
+  assertPhase(s, "lobby");
+  if (!s.settings.friendWords) throw new GameError("friend_words_off", "Friend-written rounds are turned off.", 409);
+  if (!includesWwi(s)) throw new GameError("wrong_mode", "Questions are only used in Who Wrote It? rounds.", 409);
+  getPlayer(s, playerId);
+  const existing = s.promptSubs.find((q) => q.playerId === playerId && q.status === "pending");
+  if (existing) existing.text = text;
+  else {
+    if (s.promptSubs.some((q) => q.playerId === playerId && q.status === "removed"))
+      throw new GameError("submission_removed", "The host removed your question. You can't submit another this game.", 409);
+    s.promptSubs.push({ id: ctx.id(), playerId, text, status: "pending" });
+  }
+  bump(s);
+}
+
+export function removePromptSub(s: GameState, id: string) {
+  assertPhase(s, "lobby");
+  const q = s.promptSubs.find((x) => x.id === id);
+  if (!q) throw new GameError("not_found", "Question not found.", 404);
+  q.status = "removed";
+  bump(s);
+}
+
+function promptPool(s: GameState, pack: WwiPackId): string[] {
+  const used = new Set(s.usedPrompts);
+  if (pack === "custom")
+    return s.customPrompts.map((q) => q.text).filter((t) => !used.has(promptKey(t)) && !isBlocked(t, s.settings.content));
+  return (PROMPT_BANK[pack] ?? [])
+    .filter((e) => (s.settings.content === "pg13" || e.content === "clean") && !used.has(promptKey(e.text)))
+    .map((e) => e.text);
+}
+
+/** Who Wrote It? packs that still have unused questions. */
+export function availableWwiPacks(s: GameState): WwiPackId[] {
+  return (s.settings.wwiPacks ?? BUILTIN_WWI_PACKS).filter((p) => promptPool(s, p).length > 0);
+}
+
+export function chooseWwiPrompt(s: GameState, pack: WwiPackId, ctx: Ctx): { text: string; pack: WwiPackId } {
+  const pool = promptPool(s, pack);
+  if (pool.length) return { text: pick(pool, ctx.random), pack };
+  const others = availableWwiPacks(s).filter((p) => p !== pack);
+  if (others.length) return chooseWwiPrompt(s, pick(others, ctx.random), ctx);
+  const anyBuiltin = BUILTIN_WWI_PACKS.filter((p) => promptPool(s, p).length > 0);
+  if (anyBuiltin.length) return chooseWwiPrompt(s, pick(anyBuiltin, ctx.random), ctx);
+  s.usedPrompts = []; // every question used (huge game): allow repeats again
+  return chooseWwiPrompt(s, pack === "custom" ? "hypotheticals" : pack, ctx);
+}
+
+function friendPromptAvailable(s: GameState, roundNumber: number) {
+  if (!s.settings.friendWords || !s.wwiRoundPlan.includes(roundNumber)) return null;
+  const pending = s.promptSubs.filter((q) => q.status === "pending" && !getRemoved(s, q.playerId) && !isBlocked(q.text, s.settings.content));
+  return pending.length ? pending : null;
+}
+
+function startWwiRound(s: GameState, ctx: Ctx, n: number, kind: "normal" | "final", pack: WwiPackId | null) {
+  const active = activePlayers(s);
+  if (active.length < WWI.minPlayers) {
+    // Who Wrote It?-only game: hold and tell the host (Mixed skips these rounds instead).
+    s.hold = "needPlayers";
+    s.holdMin = WWI.minPlayers;
+    if (s.phase === "loserPick" || s.phase === "dare") s.phase = "reveal";
+    s.loserPick = null;
+    s.dare = null;
+    bump(s);
+    return;
+  }
+  let question: string;
+  let category: WwiPackId | "friend";
+  let source: WordSource = "builtin";
+  const friendPs = friendPromptAvailable(s, n);
+  if (friendPs) {
+    const sub = pick(friendPs, ctx.random);
+    sub.status = "used";
+    question = sub.text;
+    category = "friend";
+    source = "friend";
+  } else {
+    const packs = availableWwiPacks(s);
+    const want =
+      pack && (s.settings.wwiPacks as string[]).includes(pack) ? pack : packs.length ? pick(packs, ctx.random) : pick(s.settings.wwiPacks, ctx.random);
+    const q = chooseWwiPrompt(s, want, ctx);
+    question = q.text;
+    category = q.pack;
+    source = q.pack === "custom" ? "inside" : "builtin";
+  }
+  s.usedPrompts.push(promptKey(question));
+  const ids = active.map((p) => p.id);
+  const durationMs = (s.settings.writeSec ?? 45) * 1000;
+  const progress: Record<string, PlayerProgress> = {};
+  for (const id of ids) progress[id] = newProgress(0);
+  s.roundsPlayed = n;
+  s.round = {
+    id: ctx.id(),
+    mode: "wwi",
+    number: n,
+    kind,
+    sdAttempt: 0,
+    category,
+    answer: "",
+    hint: "",
+    clue: null,
+    alternates: [],
+    hostHints: [],
+    question,
+    wwi: { stage: "writing", answers: {}, queue: [], current: null, total: 0, revealed: [], removed: [], lastResults: {}, noAnswers: false },
+    source,
+    authorId: null, // friend-written questions stay anonymous and earn no author points
+    startedAt: ctx.now,
+    durationMs,
+    deadline: ctx.now + durationMs,
+    pausedRemainingMs: null,
+    participants: ids,
+    progress,
+    multiplier: kind === "final" ? 2 : 1,
+    endedAt: null,
+    endReason: null,
+    authorBonus: 0,
+    stumpedCount: 0,
+    sdWinnerId: null,
+  };
+  s.phase = "round";
+  s.paused = false;
+  s.nextCategory = null;
+  s.loserPick = null;
+  s.dare = null;
+  s.hold = null;
+  s.holdMin = null;
+  bump(s);
+}
+
+/** Start a new stage timer (kept paused if the game is paused). */
+function wwiStage(s: GameState, r: Round, stage: WwiRound["stage"], ms: number, ctx: Ctx) {
+  r.wwi!.stage = stage;
+  r.durationMs = ms;
+  r.deadline = ctx.now + ms;
+  r.pausedRemainingMs = s.paused ? ms : null;
+}
+
+function wwiAuthorOf(w: WwiRound, answerId: string): string | null {
+  for (const [authorId, a] of Object.entries(w.answers)) if (a.id === answerId) return authorId;
+  return null;
+}
+
+/** Players who can guess on an answer: everyone in the round except its author. */
+function wwiGuessers(s: GameState, r: Round, authorId: string): string[] {
+  return r.participants.filter((id) => id !== authorId && r.progress[id] && !getRemoved(s, id));
+}
+
+/** How many answers this round will show, after removals. */
+function wwiRecount(s: GameState, w: WwiRound) {
+  w.total = Math.min(s.settings.answersShown ?? 3, w.revealed.length + (w.current ? 1 : 0) + w.queue.length);
+}
+
+/** Writing is over: pick the answers to show, favoring players whose answers have been shown least. */
+function wwiCloseWriting(s: GameState, ctx: Ctx) {
+  const r = s.round!;
+  const w = r.wwi!;
+  const authors = Object.keys(w.answers).filter((id) => !getRemoved(s, id));
+  if (authors.length === 0) {
+    w.noAnswers = true;
+    endRound(s, ctx, "timer"); // nobody wrote anything: no points, the host moves on
+    return;
+  }
+  // Shuffle first so ties (and submission order) never decide who goes first; the sort is stable.
+  const order = shuffle(authors, ctx.random).sort((a, b) => (s.wwiShownCount[a] ?? 0) - (s.wwiShownCount[b] ?? 0));
+  w.queue = order.map((id) => w.answers[id].id);
+  wwiRecount(s, w);
+  wwiStage(s, r, "review", WWI.reviewMs, ctx);
+  bump(s);
+}
+
+/** Put the next selected answer on screen, or end the round when all have been shown. */
+function wwiNextAnswer(s: GameState, ctx: Ctx) {
+  const r = s.round!;
+  const w = r.wwi!;
+  w.current = null;
+  w.lastResults = {};
+  w.queue = w.queue.filter((id) => {
+    const a = wwiAuthorOf(w, id);
+    return !!a && !getRemoved(s, a);
+  });
+  wwiRecount(s, w);
+  if (w.revealed.length >= w.total || w.queue.length === 0) {
+    endRound(s, ctx, "allDone");
+    return;
+  }
+  const answerId = w.queue.shift()!;
+  const authorId = wwiAuthorOf(w, answerId)!;
+  // Choices: the author plus 3 others who have written an answer (or were here from the start).
+  const joinOrder = new Map(s.players.map((p, i) => [p.id, i]));
+  const canonical = (ids: string[]) => [...ids].sort((a, b) => joinOrder.get(a)! - joinOrder.get(b)!);
+  const decoys = shuffle(canonical(s.wwiWriters.filter((id) => id !== authorId && !getRemoved(s, id))), ctx.random);
+  const orders: Record<string, string[]> = {};
+  for (const g of wwiGuessers(s, r, authorId)) {
+    const mine = [authorId, ...decoys.filter((d) => d !== g).slice(0, 3)];
+    orders[g] = shuffle(canonical(mine), ctx.random);
+  }
+  w.current = { answerId, text: w.answers[authorId].text, authorId, orders, guesses: {}, eliminated: {}, doubleGuess: {}, used: {} };
+  s.wwiShownCount[authorId] = (s.wwiShownCount[authorId] ?? 0) + 1;
+  for (const id of r.participants) {
+    const pr = r.progress[id];
+    if (pr) {
+      pr.frozenUntil = 0;
+      pr.frozenOnce = false;
+    }
+  }
+  wwiStage(s, r, "guessing", (s.settings.guessSec ?? 15) * 1000, ctx);
+  bump(s);
+}
+
+/** Reveal the author of the answer on screen and score it. */
+function wwiRevealCurrent(s: GameState, ctx: Ctx) {
+  const r = s.round!;
+  const w = r.wwi!;
+  const cur = w.current!;
+  const authorId = cur.authorId;
+  const guessers = wwiGuessers(s, r, authorId);
+  const results: Record<string, WwiResult> = {};
+  let correct = 0;
+  let wrong = 0;
+  for (const g of guessers) {
+    const picks = cur.guesses[g] ?? [];
+    if (picks.length === 0) {
+      results[g] = "missed";
+    } else if (picks.includes(authorId)) {
+      results[g] = "correct";
+      correct += 1;
+      const pr = r.progress[g];
+      addScore(s, g, WWI.correctGuess * r.multiplier, pr);
+      pr.wwiCorrect = (pr.wwiCorrect ?? 0) + 1;
+      const pl = s.players.find((x) => x.id === g)!;
+      pl.stats.correctGuesses = (pl.stats.correctGuesses ?? 0) + 1;
+    } else {
+      results[g] = "wrong";
+      wrong += 1;
+    }
+  }
+  const author = s.players.find((x) => x.id === authorId);
+  if (author && !author.removed) {
+    results[authorId] = "author";
+    const ap = r.progress[authorId];
+    if (wrong) addScore(s, authorId, WWI.foolPoints * wrong * r.multiplier, ap);
+    if (ap) ap.wwiFooled = (ap.wwiFooled ?? 0) + wrong;
+    author.stats.fooled = (author.stats.fooled ?? 0) + wrong;
+    author.stats.timesGuessed = (author.stats.timesGuessed ?? 0) + correct;
+  }
+  w.revealed.push({ answerId: cur.answerId, text: cur.text, authorId, correct, wrong, guessers: guessers.length });
+  w.lastResults = results;
+  w.current = null; // privacy: who guessed whom is never kept after the reveal
+  wwiStage(s, r, "answerReveal", WWI.answerRevealMs, ctx);
+  bump(s);
+}
+
+/** Give back power-ups spent on an answer that never got revealed. */
+function wwiRefund(s: GameState, w: WwiRound) {
+  const cur = w.current;
+  if (!cur) return;
+  for (const [id, used] of Object.entries(cur.used)) {
+    const p = s.players.find((x) => x.id === id);
+    if (p && used.length) p.powerupsLeft += used.length;
+  }
+}
+
+/** Timer-driven stage changes. */
+function wwiAdvance(s: GameState, ctx: Ctx) {
+  const w = s.round!.wwi!;
+  if (w.stage === "writing") wwiCloseWriting(s, ctx);
+  else if (w.stage === "guessing" && w.current) wwiRevealCurrent(s, ctx);
+  else wwiNextAnswer(s, ctx);
+}
+
+/** Early stage changes: everyone has written, or everyone who can guess has. */
+function wwiCheckStage(s: GameState, ctx: Ctx) {
+  const r = s.round!;
+  const w = r.wwi;
+  if (!w || s.paused) return;
+  if (w.stage === "writing") {
+    const writers = r.participants.filter((id) => r.progress[id] && !getRemoved(s, id));
+    if (writers.length && writers.every((id) => w.answers[id])) wwiCloseWriting(s, ctx);
+  } else if (w.stage === "guessing" && w.current) {
+    const cur = w.current;
+    const guessers = wwiGuessers(s, r, cur.authorId);
+    if (guessers.every((g) => (cur.guesses[g]?.length ?? 0) >= (cur.doubleGuess[g] ? 2 : 1))) wwiRevealCurrent(s, ctx);
+  }
+}
+
+/** Round over: drop everything secret that was never revealed. */
+function wwiFinish(s: GameState, w: WwiRound) {
+  wwiRefund(s, w);
+  w.current = null;
+  w.queue = [];
+  w.answers = {};
+}
+
+/** A removed player can't write or guess, and their unrevealed answer leaves the selection. */
+function wwiDropPlayer(s: GameState, w: WwiRound, playerId: string, ctx: Ctx) {
+  const mine = w.answers[playerId];
+  if (w.current) {
+    delete w.current.orders[playerId];
+    delete w.current.guesses[playerId];
+  }
+  if (!mine) return;
+  w.queue = w.queue.filter((id) => id !== mine.id);
+  if (w.current?.answerId === mine.id) {
+    // Their answer is on screen: skip it (no points) and show a replacement if there is one.
+    wwiRefund(s, w);
+    w.removed.push(mine.id);
+    w.current = null;
+    wwiNextAnswer(s, ctx);
+  } else {
+    if (!w.revealed.some((x) => x.answerId === mine.id)) delete w.answers[playerId];
+    wwiRecount(s, w);
+  }
+}
+
+function wwiPlay(s: GameState, playerId: string) {
+  assertPhase(s, "round");
+  const r = s.round!;
+  if (r.mode !== "wwi" || !r.wwi) throw new GameError("wrong_mode", "This isn't a Who Wrote It? round.", 409);
+  const p = getPlayer(s, playerId);
+  if (s.paused) throw new GameError("paused", "The game is paused.", 409);
+  const pr = r.progress[playerId];
+  if (!pr) throw new GameError("not_playing", "You'll join from the next question.", 409);
+  return { r, w: r.wwi, p, pr };
+}
+
+/** Write your one anonymous answer. It locks once submitted. */
+export function submitWwiAnswer(s: GameState, playerId: string, raw: unknown, ctx: Ctx) {
+  const { w, p } = wwiPlay(s, playerId);
+  if (w.stage !== "writing") throw new GameError("writing_closed", "Writing time is over.", 409);
+  if (w.answers[playerId]) throw new GameError("answer_locked", "Your answer is locked in.", 409);
+  const v = validateWwiAnswer(raw, s.settings.content);
+  if (!v.ok) throw new GameError("invalid", v.error);
+  p.wwiTimes = rateLimit(p.wwiTimes ?? [], ctx.now, 5000, 6, 250);
+  w.answers[playerId] = { id: ctx.id(), text: v.value };
+  if (!s.wwiWriters.includes(playerId)) s.wwiWriters.push(playerId);
+  bump(s);
+  checkRoundComplete(s, ctx);
+  return { locked: true };
+}
+
+/** Guess who wrote the answer on screen. One pick (two with Double Guess); never echoed back or shown to others. */
+export function wwiGuess(s: GameState, playerId: string, targetId: unknown, ctx: Ctx) {
+  const { w, p, pr } = wwiPlay(s, playerId);
+  const cur = w.current;
+  if (w.stage !== "guessing" || !cur) throw new GameError("not_guessing", "Wait for the next answer.", 409);
+  if (cur.authorId === playerId) throw new GameError("sitting_out", "That's your answer — keep a straight face 😏", 409);
+  if (pr.frozenUntil > ctx.now) throw new GameError("frozen", "Your guess buttons are frozen! ❄️", 409);
+  const limit = cur.doubleGuess[playerId] ? 2 : 1;
+  const mine = cur.guesses[playerId] ?? [];
+  if (mine.length >= limit) throw new GameError("guess_locked", "Your guess is locked in.", 409);
+  const options = (cur.orders[playerId] ?? []).filter((id) => !(cur.eliminated[playerId] ?? []).includes(id) && !getRemoved(s, id));
+  if (typeof targetId !== "string" || !options.includes(targetId)) throw new GameError("bad_guess", "Pick one of the names on your screen.");
+  if (mine.includes(targetId)) throw new GameError("already_guessed", "You already picked them.", 409);
+  p.wwiTimes = rateLimit(p.wwiTimes ?? [], ctx.now, 5000, 6, 250);
+  cur.guesses[playerId] = [...mine, targetId];
+  const locked = mine.length + 1 >= limit;
+  bump(s);
+  checkRoundComplete(s, ctx);
+  return { locked };
+}
+
+/** Who Wrote It? power-ups: Freeze a rival's guess buttons, Eliminate Two wrong names, Double Guess. */
+function wwiPowerup(s: GameState, r: Round, playerId: string, type: PowerUp, targetId: string | null, ctx: Ctx) {
+  const w = r.wwi!;
+  const cur = w.current;
+  if (w.stage !== "guessing" || !cur) throw new GameError("not_guessing", "Power-ups work while an answer is on screen.", 409);
+  if (cur.authorId === playerId) throw new GameError("sitting_out", "That's your answer — keep a straight face 😏", 409);
+  const picked = (cur.guesses[playerId] ?? []).length > 0;
+  if (type === "freeze") {
+    if (!targetId || targetId === playerId) throw new GameError("bad_target", "Pick a rival to freeze.");
+    const tp = r.progress[targetId];
+    if (!tp || getRemoved(s, targetId)) throw new GameError("bad_target", "That player isn't in this question.", 409);
+    if (tp.frozenOnce) throw new GameError("already_frozen", "That player was already frozen for this answer.", 409);
+    if (remainingMs(r, ctx.now) <= WWI.freezeCutoffMs) throw new GameError("too_late", "Too late — no freezes in the final 5 seconds.", 409);
+    // Anyone in the question can be frozen — even the author or someone who already guessed —
+    // so a freeze never hints at who wrote the answer.
+    tp.frozenOnce = true;
+    tp.frozenUntil = ctx.now + FREEZE_MS;
+  } else if (type === "reveal") {
+    // Eliminate Two: remove two wrong names (always leaving at least two to pick from).
+    if (picked) throw new GameError("already_guessed", "Use it before you guess.", 409);
+    if (cur.eliminated[playerId]?.length) throw new GameError("already_used", "Already eliminated for this answer.", 409);
+    if (cur.doubleGuess[playerId]) throw new GameError("one_boost", "One boost per answer — Double Guess is already on.", 409);
+    const wrong = (cur.orders[playerId] ?? []).filter((id) => id !== cur.authorId);
+    const n = Math.min(2, wrong.length - 1);
+    if (n <= 0) throw new GameError("nothing_to_eliminate", "Not enough names to eliminate.", 409);
+    cur.eliminated[playerId] = shuffle(wrong, ctx.random).slice(0, n);
+  } else if (type === "extraLife") {
+    // Double Guess: pick two names; it counts as correct if either is the author.
+    if (picked) throw new GameError("already_guessed", "Use it before you guess.", 409);
+    if (cur.doubleGuess[playerId]) throw new GameError("already_double", "Double Guess is already on.", 409);
+    if (cur.eliminated[playerId]?.length) throw new GameError("one_boost", "One boost per answer — you already eliminated two.", 409);
+    cur.doubleGuess[playerId] = true;
+  } else {
+    throw new GameError("bad_powerup", "Unknown power-up.");
+  }
+  (cur.used[playerId] ??= []).push(type);
+}
+
+function wwiHost(s: GameState) {
+  assertPhase(s, "round");
+  const r = s.round!;
+  if (r.mode !== "wwi" || !r.wwi) throw new GameError("wrong_mode", "This isn't a Who Wrote It? round.", 409);
+  return { r, w: r.wwi };
+}
+
+/** Host: skip the answer on screen before its author is revealed. No points; another answer replaces it if one is available. */
+export function skipWwiAnswer(s: GameState, ctx: Ctx) {
+  const { w } = wwiHost(s);
+  if (w.stage !== "guessing" || !w.current) throw new GameError("not_guessing", "There's no answer on screen to skip.", 409);
+  wwiRefund(s, w);
+  w.removed.push(w.current.answerId);
+  w.current = null;
+  wwiNextAnswer(s, ctx);
+}
+
+/** Host: remove a selected answer before it appears on the TV. The next available answer takes its place. */
+export function removeWwiAnswer(s: GameState, answerId: string, ctx: Ctx) {
+  const { w } = wwiHost(s);
+  if (w.current?.answerId === answerId) return skipWwiAnswer(s, ctx);
+  const i = w.queue.indexOf(answerId);
+  if (i < 0) throw new GameError("not_found", "That answer isn't waiting to be shown.", 404);
+  w.queue.splice(i, 1);
+  w.removed.push(answerId);
+  const authorId = wwiAuthorOf(w, answerId);
+  if (authorId) delete w.answers[authorId];
+  wwiRecount(s, w);
+  bump(s);
 }
 
 // ---------------------------------------------------------------------------
@@ -1628,7 +2145,12 @@ export function playAgain(s: GameState, ctx: Ctx) {
   s.submissions = s.submissions.filter((x) => x.status === "pending");
   s.questionSubs = s.questionSubs.filter((x) => x.status === "pending");
   s.questionRoundPlan = [];
+  s.promptSubs = s.promptSubs.filter((x) => x.status === "pending");
+  s.wwiRoundPlan = [];
+  s.wwiShownCount = {};
+  s.wwiWriters = [];
   s.hold = null;
+  s.holdMin = null;
   s.phase = "lobby";
   s.paused = false;
   s.round = null;

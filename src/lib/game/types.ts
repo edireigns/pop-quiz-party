@@ -147,6 +147,9 @@ export interface PlayerProgress {
   voteReset?: boolean;
   /** Most Likely To: after the round, whether this player's vote matched a crowned player. */
   voteResult?: "correct" | "wrong" | "missed" | null;
+  /** Who Wrote It?: correct guesses this round, and players this player's answer fooled. */
+  wwiCorrect?: number;
+  wwiFooled?: number;
   status: ProgressStatus;
   solvedAt: number | null;
   solveMs: number | null;
@@ -211,14 +214,18 @@ export interface WwiShownAnswer {
   answerId: string;
   text: string;
   authorId: string;
-  /** Same 4 names for every guesser (so comparing phones reveals nothing). */
-  choices: string[];
-  /** Each guesser's own shuffled order. */
+  /**
+   * Each guesser's own choices, already shuffled: the author plus up to 3 other
+   * players (never the guesser themselves).
+   */
   orders: Record<string, string[]>;
-  /** SECRET guesser → picked player ids (2 with Double Guess). Wiped after scoring. */
+  /** SECRET guesser → picked player ids (2 with Double Guess). Dropped once the author is revealed. */
   guesses: Record<string, string[]>;
+  /** Eliminate Two: the wrong names removed from that guesser's buttons. */
   eliminated: Record<string, string[]>;
   doubleGuess: Record<string, boolean>;
+  /** Power-ups spent on this answer (refunded if the host skips it). */
+  used: Record<string, PowerUp[]>;
 }
 
 /** Public record of a revealed answer. */
@@ -238,9 +245,8 @@ export interface WwiRound {
   /** SECRET: answer ids still to show, in order. */
   queue: string[];
   current: WwiShownAnswer | null;
-  /** How many answers this round will show (for "Answer 2 of 3"), and how many have started. */
+  /** How many answers this round will show (for "Answer 2 of 3"). */
   total: number;
-  shown: number;
   revealed: WwiRevealed[];
   /** Answer ids the host removed (never shown). */
   removed: string[];

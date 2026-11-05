@@ -20,7 +20,18 @@ export function standings(s: GameState): Standing[] {
 }
 
 export interface Award {
-  key: "speedDemon" | "livesLost" | "hintAddict" | "comebackKid" | "masterStumper" | "emojiWhisperer" | "crowdFavorite" | "mindReader";
+  key:
+    | "speedDemon"
+    | "livesLost"
+    | "hintAddict"
+    | "comebackKid"
+    | "masterStumper"
+    | "emojiWhisperer"
+    | "crowdFavorite"
+    | "mindReader"
+    | "mastermind"
+    | "undercoverAgent"
+    | "openBook";
   title: string;
   emoji: string;
   playerId: string;
@@ -145,6 +156,38 @@ export function computeAwards(s: GameState): Award[] {
       playerId: mind.p.id,
       nickname: mind.p.nickname,
       detail: `Read the room ${mind.v} time${mind.v === 1 ? "" : "s"}`,
+    });
+
+  // Who Wrote It?. Hidden when nobody qualifies.
+  const master = best(active, rankOf, (p) => ((p.stats.correctGuesses ?? 0) > 0 ? p.stats.correctGuesses! : null), more);
+  if (master)
+    awards.push({
+      key: "mastermind",
+      title: "Mastermind",
+      emoji: "🕵️",
+      playerId: master.p.id,
+      nickname: master.p.nickname,
+      detail: `Spotted the writer ${master.v} time${master.v === 1 ? "" : "s"}`,
+    });
+  const agent = best(active, rankOf, (p) => ((p.stats.fooled ?? 0) > 0 ? p.stats.fooled! : null), more);
+  if (agent)
+    awards.push({
+      key: "undercoverAgent",
+      title: "Undercover Agent",
+      emoji: "🥸",
+      playerId: agent.p.id,
+      nickname: agent.p.nickname,
+      detail: `Fooled ${agent.v} guess${agent.v === 1 ? "" : "es"}`,
+    });
+  const book = best(active, rankOf, (p) => ((p.stats.timesGuessed ?? 0) > 0 ? p.stats.timesGuessed! : null), more);
+  if (book)
+    awards.push({
+      key: "openBook",
+      title: "Open Book",
+      emoji: "📖",
+      playerId: book.p.id,
+      nickname: book.p.nickname,
+      detail: `Recognized ${book.v} time${book.v === 1 ? "" : "s"}`,
     });
 
   // Use the settings the game was played with, so editing settings on the

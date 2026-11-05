@@ -168,7 +168,7 @@ export function validateWwiAnswer(input: unknown, level: ContentLevel): Validati
   const value = input.replace(/\s+/g, " ").trim();
   if (!value) return { ok: false, error: "Write an answer." };
   if ([...value].length > 80) return { ok: false, error: "Answers are 80 characters max." };
-  if (!/^[\p{L}\p{N}\p{P}\p{Zs}\p{S}\p{M}]*$/u.test(value)) return { ok: false, error: "That answer has unsupported characters." };
+  if (!/^[\p{L}\p{N}\p{P}\p{Zs}\p{S}\p{M}\u200D]*$/u.test(value)) return { ok: false, error: "That answer has unsupported characters." };
   if (isBlocked(value, level)) return { ok: false, error: "That answer isn't allowed in this game — try another." };
   return { ok: true, value };
 }
