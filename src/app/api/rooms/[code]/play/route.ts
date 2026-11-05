@@ -11,6 +11,9 @@ export async function POST(req: Request, ctx: RouteContext<"/api/rooms/[code]/pl
     const token = req.headers.get("x-player-token");
     memoryLimit(`play:${clientIp(req)}:${(token ?? "").slice(0, 12)}`, 25, 2_000);
     const body = await readBody(req);
+    // Votes get their own tight limit, applied before the database so rejected
+    // attempts count too (a failed action rolls back the engine's own limiter).
+    if (body.action === "vote") memoryLimit(`vote:${(token ?? clientIp(req)).slice(0, 24)}`, 3, 3_000);
     const { state, now, result } = await withRoom(code, (s, c) => {
       const p = playerForToken(s, token);
       const r = playerAction(s, c, p.id, body);
@@ -22,7 +25,9 @@ export async function POST(req: Request, ctx: RouteContext<"/api/rooms/[code]/pl
         ? { correct: r?.correct ?? null }
         : body.action === "answer"
           ? { correct: r?.correct ?? null, attemptsLeft: r?.attemptsLeft ?? null }
-          : {};
+          : body.action === "vote"
+            ? { locked: true } // never echo who the vote was for
+            : {};
     return json({ ...extra, view: playerView(state, result.playerId, now) });
   });
 }

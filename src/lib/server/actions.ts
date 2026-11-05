@@ -1,7 +1,7 @@
 import "server-only";
 import * as E from "@/lib/game/engine";
 import { type Ctx, GameError, type GameState, type PowerUp, type Settings } from "@/lib/game/types";
-import { validateDare, validateHint, validatePhrase } from "@/lib/moderation";
+import { validateDare, validateHint, validatePhrase, validateQuestion } from "@/lib/moderation";
 import { cleanClue, isEmojiClue } from "@/lib/game/answers";
 
 /** Optional emoji clue: emojis and spaces only. */
@@ -65,6 +65,17 @@ export function hostAction(s: GameState, ctx: Ctx, body: Record<string, unknown>
       return E.removeInsideClue(s, str(body.id));
     case "dropHint":
       return E.dropHint(s, ctx);
+    case "addCustomQuestion": {
+      if (s.phase !== "lobby" && s.phase !== "ended") throw new GameError("wrong_phase", "Add questions before the game starts.", 409);
+      const q = validateQuestion(body.text, "pg13"); // the game's content level is applied when questions are used
+      if (!q.ok) throw new GameError("invalid", q.error);
+      return E.addCustomQuestion(s, q.value, ctx);
+    }
+    case "removeCustomQuestion":
+      if (s.phase !== "lobby" && s.phase !== "ended") throw new GameError("wrong_phase", "Questions are locked once the game starts.", 409);
+      return E.removeCustomQuestion(s, str(body.id));
+    case "removeQuestionSub":
+      return E.removeQuestionSub(s, str(body.id));
     case "addDare": {
       const d = validateDare(body.text, "pg13"); // content level is applied when dares are used
       if (!d.ok) throw new GameError("invalid", d.error);
@@ -109,6 +120,13 @@ export function playerAction(s: GameState, ctx: Ctx, playerId: string, body: Rec
       return E.takeHint(s, playerId, ctx);
     case "answer":
       return E.submitAnswer(s, playerId, body.answer, ctx);
+    case "vote":
+      return E.castVote(s, playerId, body.targetId, ctx);
+    case "submitQuestion": {
+      const q = validateQuestion(body.text, s.settings.content);
+      if (!q.ok) throw new GameError("invalid", q.error);
+      return E.submitQuestion(s, playerId, q.value, ctx);
+    }
     case "powerup": {
       const type = str(body.type) as PowerUp;
       if (!["freeze", "reveal", "extraLife"].includes(type)) throw new GameError("bad_powerup", "Unknown power-up.");
