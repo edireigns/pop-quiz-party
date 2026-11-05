@@ -1,13 +1,13 @@
 // Projections of the server-side GameState for each client role.
 // SECURITY: the answer (and hint) may only appear here once the round has
 // ended (round.endedAt != null). Unit tests enforce this.
-import { CATEGORY_EMOJI, CATEGORY_LABELS } from "@/data/categories";
+import { emojiFor, labelFor } from "@/data/categories";
 import { computeAwards, standings, type Award, type Standing } from "./awards";
 import { knownLetters, remainingMs } from "./engine";
-import { EMOJI, STARTING_LIVES } from "./scoring";
+import { EMOJI, MLT, STARTING_LIVES } from "./scoring";
 import { answerLetters } from "./answers";
 import { maskAnswer, solvedFraction, type MaskCell } from "./text";
-import type { CategoryId, GameMode, GameState, Phase, Round, RoundMode, Settings } from "./types";
+import type { CategoryId, GameMode, GameState, PackId, Phase, Round, RoundMode, Settings } from "./types";
 
 export interface TimerView {
   deadline: number;
@@ -25,13 +25,20 @@ export interface RivalEntry {
   nickname: string;
   lives: number;
   pct: number;
-  status: "playing" | "solved" | "out" | "waiting";
+  status: "playing" | "solved" | "out" | "waiting" | "voted";
   frozen: boolean;
 }
 
 export interface RevealView {
   mode: RoundMode;
+  /** Word rounds: the answer. Most Likely To: the question. */
   answer: string;
+  /**
+   * Most Likely To: vote TOTALS per player, lowest first (for the suspense reveal),
+   * and who was crowned. Never who voted for whom. Null when skipped.
+   */
+  totals: { id: string; nickname: string; votes: number }[] | null;
+  crowned: { id: string; nickname: string }[];
   /** How many participants got it, out of how many played. */
   solvedCount: number;
   totalPlayers: number;
@@ -47,7 +54,7 @@ export interface RevealView {
 }
 
 export interface CategoryOption {
-  id: CategoryId;
+  id: CategoryId | PackId;
   label: string;
   emoji: string;
 }
@@ -65,6 +72,8 @@ export interface DareView {
 export interface LoserPickView {
   playerId: string;
   nickname: string;
+  /** "pack" when the next round is Most Likely To. */
+  kind: "category" | "pack";
   options: CategoryOption[];
   deadline: number;
 }
@@ -82,8 +91,11 @@ interface BaseView {
   code: string;
   phase: Phase;
   paused: boolean;
-  /** The host's Game Mode for this game. */
+  /** The host's Game Mode for this game, and the modes Mixed rotates through. */
   mode: GameMode;
+  mixedModes: RoundMode[];
+  /** A Most Likely To-only game is waiting for at least 3 active players. */
+  hold: "needPlayers" | null;
   gameNumber: number;
   roundsPlayed: number;
   totalRounds: number;
@@ -95,8 +107,11 @@ interface BaseView {
     /** Emoji Decode: the emoji clue (shown to everyone) and the hints the host has dropped. */
     clue: string | null;
     hostHints: string[];
-    /** Players finished (solved or out) / players in the round. */
+    /** Players finished (solved, out, or voted) / players in the round. */
     answered: { done: number; total: number };
+    /** Most Likely To: the question and who can be voted for (public). */
+    question: string | null;
+    candidates: { id: string; nickname: string }[];
     number: number;
     kind: Round["kind"];
     sdAttempt: number;
@@ -113,12 +128,12 @@ interface BaseView {
   final: FinalView | null;
 }
 
-export function categoryLabel(c: CategoryId | "friend") {
-  return CATEGORY_LABELS[c];
+export function categoryLabel(c: CategoryId | PackId | "friend") {
+  return labelFor(c);
 }
 
-export function categoryOption(id: CategoryId): CategoryOption {
-  return { id, label: CATEGORY_LABELS[id], emoji: CATEGORY_EMOJI[id] };
+export function categoryOption(id: CategoryId | PackId): CategoryOption {
+  return { id, label: labelFor(id), emoji: emojiFor(id) };
 }
 
 function nameOf(s: GameState, id: string | null) {
@@ -157,6 +172,8 @@ function base(s: GameState, now: number): BaseView {
     phase: s.phase,
     paused: s.paused,
     mode: s.settings.mode ?? "hangman",
+    mixedModes: s.settings.mixedModes ?? ["hangman", "emoji"],
+    hold: s.hold ?? null,
     gameNumber: s.gameNumber,
     roundsPlayed: s.roundsPlayed,
     totalRounds: s.settings.rounds,
@@ -171,11 +188,16 @@ function base(s: GameState, now: number): BaseView {
             done: r.participants.filter((id) => r.progress[id] && r.progress[id].status !== "playing").length,
             total: r.participants.filter((id) => r.progress[id]).length,
           },
+          question: r.mode === "mlt" ? (r.question ?? null) : null,
+          candidates:
+            r.mode === "mlt"
+              ? (r.candidates ?? []).filter((id) => s.players.some((p) => p.id === id && !p.removed)).map((id) => ({ id, nickname: nameOf(s, id)! }))
+              : [],
           number: r.number,
           kind: r.kind,
           sdAttempt: r.sdAttempt,
           category: categoryLabel(r.category),
-          categoryEmoji: CATEGORY_EMOJI[r.category],
+          categoryEmoji: emojiFor(r.category),
           multiplier: r.multiplier,
           timer: {
             deadline: r.deadline,
@@ -190,8 +212,15 @@ function base(s: GameState, now: number): BaseView {
       showRound && ended
         ? {
             mode: r.mode,
-            answer: r.answer,
+            answer: r.mode === "mlt" ? (r.question ?? "") : r.answer,
             ...revealStats(s, r),
+            totals:
+              r.mode === "mlt" && r.totals
+                ? Object.entries(r.totals)
+                    .map(([id, votes]) => ({ id, nickname: nameOf(s, id)!, votes }))
+                    .sort((a, b) => a.votes - b.votes || a.nickname.localeCompare(b.nickname))
+                : null,
+            crowned: (r.mode === "mlt" ? (r.crowned ?? []) : []).map((id) => ({ id, nickname: nameOf(s, id)! })),
             skipped: r.endReason === "skipped",
             isFriend: r.source === "friend",
             authorId: r.authorId,
@@ -206,6 +235,7 @@ function base(s: GameState, now: number): BaseView {
         ? {
             playerId: s.loserPick.playerId,
             nickname: nameOf(s, s.loserPick.playerId)!,
+            kind: s.loserPick.kind ?? "category",
             options: s.loserPick.options.map(categoryOption),
             deadline: s.loserPick.deadline,
           }
@@ -235,7 +265,7 @@ function base(s: GameState, now: number): BaseView {
 // ---------------------------------------------------------------------------
 export interface TvView extends BaseView {
   role: "tv";
-  lobby: { players: { id: string; nickname: string }[]; submissions: number; friendWords: boolean } | null;
+  lobby: { players: { id: string; nickname: string }[]; submissions: number; questions: number; friendWords: boolean } | null;
   pattern: MaskCell[] | null; // always blank during a round
   rivals: RivalEntry[];
   reactions: { id: number; emoji: string; nickname: string; at: number }[];
@@ -252,6 +282,10 @@ export function rivalsFor(s: GameState, now: number, disguiseAuthor: boolean): R
         if (r && disguiseAuthor && r.authorId === p.id && !r.endedAt)
           return { id: p.id, nickname: p.nickname, lives: r.mode === "emoji" ? EMOJI.attempts : STARTING_LIVES, pct: 0, status: "playing", frozen: false };
         return { id: p.id, nickname: p.nickname, lives: 0, pct: 0, status: "waiting", frozen: false };
+      }
+      if (r.mode === "mlt") {
+        // Who has voted is public ("N votes in"); who they voted for never is.
+        return { id: p.id, nickname: p.nickname, lives: 0, pct: pr.status === "voted" ? 100 : 0, status: pr.status, frozen: pr.frozenUntil > now && !r.endedAt };
       }
       return {
         id: p.id,
@@ -276,6 +310,7 @@ export function tvView(s: GameState, now: number): TvView {
         ? {
             players: s.players.filter((p) => !p.removed).map((p) => ({ id: p.id, nickname: p.nickname })),
             submissions: s.submissions.filter((x) => x.status === "pending").length,
+            questions: s.questionSubs.filter((x) => x.status === "pending").length,
             friendWords: s.settings.friendWords,
           }
         : null,
@@ -289,7 +324,7 @@ export function tvView(s: GameState, now: number): TvView {
 // ---------------------------------------------------------------------------
 // Player phone
 // ---------------------------------------------------------------------------
-export type MyRoundState = "playing" | "solved" | "out" | "sittingOut" | "waiting";
+export type MyRoundState = "playing" | "solved" | "out" | "sittingOut" | "waiting" | "voted";
 
 export interface PlayerView extends BaseView {
   role: "player";
@@ -310,8 +345,19 @@ export interface PlayerView extends BaseView {
     /** Emoji Decode: attempts allowed this round, this player's own wrong answers, and letters revealed to them by power-up. */
     maxAttempts: number;
     revealedLetters: { position: number; letter: string }[];
+    /**
+     * Most Likely To. Deliberately NOT included: who this player voted for.
+     * voteResult is only sent after the round ends.
+     */
+    doubleVote: boolean;
+    peek: { names: string[]; votes: number } | null;
+    voteReset: boolean;
+    voteResult: "correct" | "wrong" | "missed" | null;
   };
+  questionSub: { text: string; status: string } | null;
 }
+
+const NO_MLT = { doubleVote: false, peek: null, voteReset: false, voteResult: null } as const;
 
 export function playerView(s: GameState, playerId: string, now: number): PlayerView {
   const b = base(s, now);
@@ -335,9 +381,34 @@ export function playerView(s: GameState, playerId: string, now: number): PlayerV
         freezeTargets: [],
         maxAttempts: 0,
         revealedLetters: [],
+        ...NO_MLT,
       };
     } else if (!pr) {
-      my = { state: "waiting", pattern: null, guessed: [], wrong: [], lives: 0, hint: null, hintUsed: false, frozenUntil: 0, points: 0, freezeTargets: [], maxAttempts: 0, revealedLetters: [] };
+      my = { state: "waiting", pattern: null, guessed: [], wrong: [], lives: 0, hint: null, hintUsed: false, frozenUntil: 0, points: 0, freezeTargets: [], maxAttempts: 0, revealedLetters: [], ...NO_MLT };
+    } else if (r.mode === "mlt") {
+      const canFreeze = !r.endedAt && r.kind !== "suddenDeath" && remainingMs(r, now) > MLT.freezeCutoffMs;
+      my = {
+        state: pr.status,
+        pattern: null,
+        guessed: [],
+        wrong: [],
+        lives: 0,
+        hint: null,
+        hintUsed: false,
+        frozenUntil: r.endedAt ? 0 : pr.frozenUntil,
+        points: pr.points,
+        freezeTargets: canFreeze
+          ? r.participants
+              .filter((id) => id !== playerId && r.progress[id]?.status === "playing" && !r.progress[id].frozenOnce)
+              .map((id) => ({ id, nickname: nameOf(s, id)! }))
+          : [],
+        maxAttempts: 0,
+        revealedLetters: [],
+        doubleVote: !!pr.doubleVote,
+        peek: pr.peek ? { names: pr.peek.leaderIds.map((id) => nameOf(s, id)!), votes: pr.peek.votes } : null,
+        voteReset: !!pr.voteReset,
+        voteResult: r.endedAt && r.endReason !== "skipped" ? (pr.voteResult ?? null) : null,
+      };
     } else {
       const emoji = r.mode === "emoji";
       const known = emoji ? new Set<string>() : knownLetters(r, pr);
@@ -361,6 +432,7 @@ export function playerView(s: GameState, playerId: string, now: number): PlayerV
                 .map((id) => ({ id, nickname: nameOf(s, id)! })),
         maxAttempts: emoji ? (r.kind === "suddenDeath" ? 1 : EMOJI.attempts) : 0,
         revealedLetters: emoji ? (pr.revealedPos ?? []).map((position) => ({ position, letter: letters[position] })) : [],
+        ...NO_MLT,
       };
     }
   }
@@ -377,6 +449,10 @@ export function playerView(s: GameState, playerId: string, now: number): PlayerV
     },
     friendWords: s.settings.friendWords,
     submission: sub ? { answer: sub.answer, hint: sub.hint, clue: sub.clue ?? null, status: sub.status } : null,
+    questionSub: (() => {
+      const q = s.phase === "lobby" ? s.questionSubs.find((x) => x.playerId === playerId && x.status !== "used") : undefined;
+      return q ? { text: q.text, status: q.status } : null;
+    })(),
     my,
   };
 }
@@ -393,6 +469,10 @@ export interface HostView extends BaseView {
   insideJokeCount: number;
   insideClues: { id: string; clue: string; answer: string; alternates: string[] }[] | null;
   insideClueCount: number;
+  /** Most Likely To: host's questions; players' questions for review (no author names — they stay anonymous). */
+  customQuestions: { id: string; text: string }[] | null;
+  customQuestionCount: number;
+  questionSubs: { id: string; text: string }[];
   customDares: { id: string; text: string }[];
   progress: { playing: number; solved: number; out: number; total: number } | null;
   rivals: RivalEntry[];
@@ -427,6 +507,9 @@ export function hostView(s: GameState, now: number): HostView {
     // The host's own inside clues are only listed before the game starts, so answers never show mid-game.
     insideClues: inLobby ? s.insideClues.map((j) => ({ id: j.id, clue: j.clue, answer: j.answer, alternates: j.alternates })) : null,
     insideClueCount: s.insideClues.length,
+    customQuestions: inLobby || s.phase === "ended" ? s.customQuestions.map((q) => ({ id: q.id, text: q.text })) : null,
+    customQuestionCount: s.customQuestions.length,
+    questionSubs: inLobby ? s.questionSubs.filter((q) => q.status === "pending").map((q) => ({ id: q.id, text: q.text })) : [],
     customDares: s.customDares.map((d) => ({ id: d.id, text: d.text })),
     progress,
     rivals: s.phase === "lobby" ? [] : rivalsFor(s, now, true),

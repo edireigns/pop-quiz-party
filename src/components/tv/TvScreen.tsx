@@ -107,7 +107,7 @@ function useSplash(key: string | null, ms = 3200) {
   return shown;
 }
 
-const MODE_NAMES = { hangman: "🔤 Hangman", emoji: "😀 Emoji Decode", mixed: "🔀 Mixed (Hangman ⇄ Emoji Decode)" } as const;
+const MODE_NAMES = { hangman: "🔤 Hangman", emoji: "😀 Emoji Decode", mlt: "👑 Most Likely To", mixed: "🔀 Mixed" } as const;
 
 /** Emoji Decode on the TV: huge clue, host hints, answered count; at reveal the answer and stats. */
 function EmojiClue({ view, revealing }: { view: TvView; revealing: boolean }) {

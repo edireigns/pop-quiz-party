@@ -75,3 +75,16 @@ export function emojiPoints(remainingMs: number, durationMs: number, hintsBefore
   const speed = Math.round(EMOJI.speedMax * f);
   return Math.max(0, EMOJI.correct + speed - EMOJI.hintPenalty * Math.max(0, hintsBefore));
 }
+
+// ---------------------------------------------------------------------------
+// Most Likely To
+// ---------------------------------------------------------------------------
+export const MLT = {
+  /** Voting for a crowned player. */
+  correctVote: 100,
+  /** Being crowned. */
+  crowned: 50,
+  minPlayers: 3,
+  /** No freezes once this little time is left. */
+  freezeCutoffMs: 5000,
+} as const;

@@ -20,7 +20,7 @@ export function standings(s: GameState): Standing[] {
 }
 
 export interface Award {
-  key: "speedDemon" | "livesLost" | "hintAddict" | "comebackKid" | "masterStumper" | "emojiWhisperer";
+  key: "speedDemon" | "livesLost" | "hintAddict" | "comebackKid" | "masterStumper" | "emojiWhisperer" | "crowdFavorite" | "mindReader";
   title: string;
   emoji: string;
   playerId: string;
@@ -123,6 +123,28 @@ export function computeAwards(s: GameState): Award[] {
       playerId: whisperer.p.id,
       nickname: whisperer.p.nickname,
       detail: `Decoded ${whisperer.v} emoji clue${whisperer.v === 1 ? "" : "s"}`,
+    });
+
+  // Most Likely To. Every award only appears when someone actually qualifies.
+  const crowd = best(active, rankOf, (p) => ((p.stats.crowns ?? 0) > 0 ? p.stats.crowns! : null), more);
+  if (crowd)
+    awards.push({
+      key: "crowdFavorite",
+      title: "Crowd Favorite",
+      emoji: "👑",
+      playerId: crowd.p.id,
+      nickname: crowd.p.nickname,
+      detail: `Crowned ${crowd.v} time${crowd.v === 1 ? "" : "s"}`,
+    });
+  const mind = best(active, rankOf, (p) => ((p.stats.correctVotes ?? 0) > 0 ? p.stats.correctVotes! : null), more);
+  if (mind)
+    awards.push({
+      key: "mindReader",
+      title: "Mind Reader",
+      emoji: "🧠",
+      playerId: mind.p.id,
+      nickname: mind.p.nickname,
+      detail: `Read the room ${mind.v} time${mind.v === 1 ? "" : "s"}`,
     });
 
   // Use the settings the game was played with, so editing settings on the

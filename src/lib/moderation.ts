@@ -126,3 +126,26 @@ export function validateDare(input: unknown, level: ContentLevel): Validation {
   if (isBlocked(value, level)) return { ok: false, error: "That dare isn't allowed at this content level." };
   return { ok: true, value };
 }
+
+/**
+ * Most Likely To custom questions (host-written or player-submitted): 10–120
+ * characters and the usual content filter. Returns the question as it will be
+ * shown: "Who is most likely to …?" is added unless the text already starts with "Who".
+ */
+export function validateQuestion(input: unknown, level: ContentLevel): Validation {
+  if (typeof input !== "string") return { ok: false, error: "Write a question." };
+  const typed = input.replace(/\s+/g, " ").trim();
+  if (typed.length < 10 || typed.length > 120) return { ok: false, error: "Questions are 10–120 characters." };
+  if (!/^[\p{L}\p{N}\p{P}\p{Zs}\p{S}]*$/u.test(typed)) return { ok: false, error: "That question has unsupported characters." };
+  if (!/[A-Za-z]{3}/.test(typed)) return { ok: false, error: "Write a question with words in it." };
+  if (isBlocked(typed, level)) return { ok: false, error: "That question isn't allowed in this game." };
+  return { ok: true, value: renderQuestion(typed) };
+}
+
+/** "miss the bus" → "Who is most likely to miss the bus?"; "Who would …" stays as written. */
+export function renderQuestion(text: string): string {
+  const t = text.replace(/\s+/g, " ").trim().replace(/[?.!\s]+$/, "");
+  if (/^who\b/i.test(t)) return `${t.charAt(0).toUpperCase()}${t.slice(1)}?`;
+  const tail = t.replace(/^(is\s+)?most\s+likely\s+to\s+/i, "");
+  return `Who is most likely to ${tail}?`;
+}

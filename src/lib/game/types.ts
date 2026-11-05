@@ -19,11 +19,18 @@ export type Difficulty = "easy" | "medium" | "hard";
 export type DifficultySetting = Difficulty | "mixed";
 export type ContentLevel = "clean" | "pg13";
 
-export const GAME_MODES = ["hangman", "emoji", "mixed"] as const;
+export const GAME_MODES = ["hangman", "emoji", "mlt", "mixed"] as const;
 /** The host's choice for the whole game. */
 export type GameMode = (typeof GAME_MODES)[number];
-/** What a single round plays. Mixed alternates Hangman / Emoji Decode. */
-export type RoundMode = "hangman" | "emoji";
+/** What a single round plays. "mlt" = Most Likely To. */
+export const ROUND_MODES = ["hangman", "emoji", "mlt"] as const;
+export type RoundMode = (typeof ROUND_MODES)[number];
+
+/** Most Likely To question packs ("custom" = the host's own questions). */
+export const PACK_IDS = ["college", "friends", "chaos", "future", "habits", "custom"] as const;
+export type PackId = (typeof PACK_IDS)[number];
+export type BuiltInPackId = Exclude<PackId, "custom">;
+export const VOTE_TIMER_OPTIONS = [15, 20, 30] as const;
 
 export const ROUND_OPTIONS = [5, 10, 15, 20] as const;
 export const TIMER_OPTIONS = [45, 60, 90] as const;
@@ -32,6 +39,12 @@ export const DARE_EVERY_OPTIONS = [2, 3, 5] as const;
 export interface Settings {
   /** Defaults to "hangman". Older saved rooms without it are upgraded on load. */
   mode: GameMode;
+  /** Modes Mixed rotates through, in this order. Default ["hangman", "emoji"] (the original Mixed). */
+  mixedModes: RoundMode[];
+  /** Most Likely To voting timer (seconds). */
+  voteSec: (typeof VOTE_TIMER_OPTIONS)[number];
+  /** Most Likely To question packs in play. */
+  packs: PackId[];
   rounds: (typeof ROUND_OPTIONS)[number];
   timerSec: (typeof TIMER_OPTIONS)[number];
   categories: CategoryId[];
@@ -57,8 +70,17 @@ export interface ClueEntry {
   content: ContentLevel;
 }
 
+export interface QuestionEntry {
+  /** The end of "Who is most likely to …?", e.g. "miss their own graduation". */
+  text: string;
+  content: ContentLevel;
+}
+
 export interface PlayerStats {
   hints: number;
+  /** Most Likely To: rounds crowned (Crowd Favorite) and correct votes (Mind Reader). */
+  crowns?: number;
+  correctVotes?: number;
   /** Correct Emoji Decode answers (Emoji Whisperer award). */
   emojiSolves: number;
   livesLost: number;
@@ -83,9 +105,12 @@ export interface Player {
   guessTimes: number[];
   /** timestamps (ms) of recent Emoji Decode answers (own limiter, so fast Hangman guessing never blocks an answer) */
   answerTimes?: number[];
+  /** timestamps (ms) of recent Most Likely To votes, for rate limiting */
+  voteTimes?: number[];
 }
 
-export type ProgressStatus = "playing" | "solved" | "out";
+/** "voted" is used by Most Likely To once a player's vote is locked. */
+export type ProgressStatus = "playing" | "solved" | "out" | "voted";
 
 export interface PlayerProgress {
   guessed: string[]; // every guessed letter (upper-case), in order
@@ -95,6 +120,14 @@ export interface PlayerProgress {
   revealed: string[]; // letters revealed by the Reveal power-up (Hangman)
   /** Emoji Decode: letter positions (0-based, letters/digits only) revealed privately by the Reveal power-up. */
   revealedPos?: number[];
+  /** Most Likely To: Double Vote power-up armed for this round. */
+  doubleVote?: boolean;
+  /** Most Likely To: private Peek result (current leader(s) when peeked). */
+  peek?: { leaderIds: string[]; votes: number } | null;
+  /** Most Likely To: the player they voted for was removed, so they may vote again. */
+  voteReset?: boolean;
+  /** Most Likely To: after the round, whether this player's vote matched a crowned player. */
+  voteResult?: "correct" | "wrong" | "missed" | null;
   status: ProgressStatus;
   solvedAt: number | null;
   solveMs: number | null;
@@ -114,7 +147,8 @@ export interface Round {
   number: number; // main round number; sudden death keeps the last main number
   kind: RoundKind;
   sdAttempt: number; // 0 for normal rounds
-  category: CategoryId | "friend";
+  /** Hangman/Emoji: a category. Most Likely To: a question pack. */
+  category: CategoryId | PackId | "friend";
   answer: string;
   hint: string;
   /** Emoji Decode only: the emoji clue (public) and accepted alternates (SECRET until the round ends). */
@@ -122,6 +156,14 @@ export interface Round {
   alternates: string[];
   /** Emoji Decode only: hints the host has dropped, in order (public). */
   hostHints: string[];
+  /** Most Likely To only: the question (public), who can be voted for, and the votes. */
+  question?: string | null;
+  candidates?: string[];
+  /** SECRET voter → vote. Never leaves the server, and is wiped once the round is scored. */
+  votes?: Record<string, { targetId: string; weight: number }>;
+  /** Vote totals per candidate, set when the round ends (public then). */
+  totals?: Record<string, number> | null;
+  crowned?: string[];
   source: WordSource;
   authorId: string | null;
   startedAt: number;
@@ -177,7 +219,9 @@ export interface Reaction {
 
 export interface LoserPickState {
   playerId: string;
-  options: CategoryId[];
+  /** Categories for word rounds, question packs for Most Likely To rounds. */
+  kind?: "category" | "pack";
+  options: (CategoryId | PackId)[];
   deadline: number;
 }
 
@@ -206,7 +250,7 @@ export interface RoundRecord {
   number: number;
   kind: RoundKind;
   answer: string;
-  category: CategoryId | "friend";
+  category: CategoryId | PackId | "friend";
   source: WordSource;
   authorId: string | null;
   results: Record<string, RoundRecordEntry>;
@@ -238,7 +282,15 @@ export interface GameState {
   /** Settings the current/last game was started with (awards use these, so changing settings after a game doesn't rewrite it). */
   startedSettings: Settings | null;
   customDares: CustomDare[];
-  nextCategory: CategoryId | null;
+  /** Most Likely To: the host's own questions, players' submitted questions, and questions already asked. */
+  customQuestions: { id: string; text: string }[];
+  questionSubs: { id: string; playerId: string; text: string; status: "pending" | "used" | "removed" }[];
+  usedQuestions: string[];
+  /** SECRET: round numbers that will use a player-submitted question. */
+  questionRoundPlan: number[];
+  /** Set when a Most Likely To-only game can't start the next round (fewer than 3 players). */
+  hold: "needPlayers" | null;
+  nextCategory: CategoryId | PackId | null;
   loserPick: LoserPickState | null;
   dare: DareState | null;
   lastDareRound: number;

@@ -3,6 +3,7 @@
 // whole game can be unit-tested and replayed.
 import { WORD_BANK } from "@/data/words";
 import { CLUE_BANK } from "@/data/clues";
+import { QUESTION_BANK, questionText } from "@/data/questions";
 import { startersFor } from "@/data/dares";
 import { isBlocked } from "@/lib/moderation";
 import { REACTION_EMOJIS } from "@/data/categories";
@@ -13,6 +14,7 @@ import {
   DARE_AUTOSPIN_MS,
   EMOJI,
   emojiPoints,
+  MLT,
   FREEZE_MS,
   LOSER_PICK_MS,
   MAX_PLAYERS,
@@ -32,6 +34,11 @@ import {
   type GameMode,
   type InsideClue,
   type RoundMode,
+  type BuiltInPackId,
+  PACK_IDS,
+  type PackId,
+  ROUND_MODES,
+  VOTE_TIMER_OPTIONS,
   type Ctx,
   DARE_EVERY_OPTIONS,
   GameError,
@@ -49,8 +56,15 @@ import {
 
 export const BUILTIN_CATEGORIES: BuiltInCategoryId[] = ["tv", "genz", "movies", "music", "memes", "food", "college", "mixed"];
 
+export const BUILTIN_PACKS: BuiltInPackId[] = ["college", "friends", "chaos", "future", "habits"];
+export const DEFAULT_MIXED_MODES: RoundMode[] = ["hangman", "emoji"];
+export const MLT_SUDDEN_DEATH_QUESTION = "Who deserves the crown tonight?";
+
 export const DEFAULT_SETTINGS: Settings = {
   mode: "hangman",
+  mixedModes: [...DEFAULT_MIXED_MODES],
+  voteSec: 20,
+  packs: [...BUILTIN_PACKS],
   rounds: 10,
   timerSec: 60,
   categories: [...BUILTIN_CATEGORIES],
@@ -117,16 +131,49 @@ function markUsed(s: GameState, answer: string, clue: string | null) {
   if (clue) s.usedClues.push(clueKey(clue));
 }
 
-/** Which kind of round number `n` is. Mixed alternates, starting with Hangman. */
-export function roundModeFor(s: GameState, n: number): RoundMode {
-  const mode = s.settings.mode ?? "hangman";
-  if (mode === "mixed") return n % 2 === 1 ? "hangman" : "emoji";
-  return mode;
+function mixedList(s: GameState): RoundMode[] {
+  const list = (s.settings.mixedModes ?? DEFAULT_MIXED_MODES).filter((m) => ROUND_MODES.includes(m));
+  return list.length >= 2 ? list : [...DEFAULT_MIXED_MODES];
 }
 
-/** Sudden Death uses the game's mode; Mixed uses Hangman. */
+/** True if the game's rounds can include Most Likely To. */
+export function includesMlt(s: GameState): boolean {
+  return s.settings.mode === "mlt" || (s.settings.mode === "mixed" && mixedList(s).includes("mlt"));
+}
+
+/**
+ * Which kind of round number `n` is. Mixed rotates through the chosen modes in
+ * order (default Hangman, Emoji Decode — the original Mixed). Most Likely To
+ * rounds are skipped in Mixed when fewer than 3 players are active.
+ */
+export function roundModeFor(s: GameState, n: number): RoundMode {
+  const mode = s.settings.mode ?? "hangman";
+  if (mode !== "mixed") return mode;
+  const list = mixedList(s);
+  const m = list[(n - 1) % list.length];
+  if (m === "mlt" && activePlayers(s).length < MLT.minPlayers) {
+    for (let k = 1; k < list.length; k++) {
+      const alt = list[(n - 1 + k) % list.length];
+      if (alt !== "mlt") return alt;
+    }
+    return "hangman";
+  }
+  return m;
+}
+
+/**
+ * Sudden Death: games with word rounds keep Hangman (or Emoji Decode when that's
+ * the only word mode); a Most Likely To-only game votes on the tied players.
+ */
 export function suddenDeathMode(s: GameState): RoundMode {
-  return s.settings.mode === "emoji" ? "emoji" : "hangman";
+  if (s.settings.mode === "emoji") return "emoji";
+  if (s.settings.mode === "mlt") return "mlt";
+  if (s.settings.mode === "mixed") {
+    const list = mixedList(s);
+    if (list.includes("hangman")) return "hangman";
+    if (list.includes("emoji")) return "emoji";
+  }
+  return "hangman";
 }
 
 /**
@@ -136,6 +183,14 @@ export function suddenDeathMode(s: GameState): RoundMode {
 export function upgradeState(s: GameState): GameState {
   const any = s as unknown as Record<string, unknown>;
   if (!(s.settings as Partial<Settings>).mode) s.settings.mode = "hangman";
+  if (!Array.isArray((s.settings as Partial<Settings>).mixedModes)) s.settings.mixedModes = [...DEFAULT_MIXED_MODES];
+  if (!(s.settings as Partial<Settings>).voteSec) s.settings.voteSec = 20;
+  if (!Array.isArray((s.settings as Partial<Settings>).packs)) s.settings.packs = [...BUILTIN_PACKS];
+  if (!Array.isArray(any.customQuestions)) s.customQuestions = [];
+  if (!Array.isArray(any.questionSubs)) s.questionSubs = [];
+  if (!Array.isArray(any.usedQuestions)) s.usedQuestions = [];
+  if (!Array.isArray(any.questionRoundPlan)) s.questionRoundPlan = [];
+  if (any.hold === undefined) s.hold = null;
   if (!Array.isArray(any.insideClues)) s.insideClues = [];
   if (!Array.isArray(any.usedClues)) s.usedClues = [];
   if (any.startedSettings === undefined) s.startedSettings = null;
@@ -174,7 +229,13 @@ export function createGame(opts: { roomId: string; code: string; now: number; se
     roomId: opts.roomId,
     code: opts.code,
     createdAt: opts.now,
-    settings: { ...DEFAULT_SETTINGS, ...opts.settings },
+    settings: {
+      ...DEFAULT_SETTINGS,
+      mixedModes: [...DEFAULT_SETTINGS.mixedModes],
+      packs: [...DEFAULT_SETTINGS.packs],
+      categories: [...DEFAULT_SETTINGS.categories],
+      ...opts.settings,
+    },
     phase: "lobby",
     paused: false,
     players: [],
@@ -189,6 +250,11 @@ export function createGame(opts: { roomId: string; code: string; now: number; se
     usedClues: [],
     startedSettings: null,
     customDares: [],
+    customQuestions: [],
+    questionSubs: [],
+    usedQuestions: [],
+    questionRoundPlan: [],
+    hold: null,
     nextCategory: null,
     loserPick: null,
     dare: null,
@@ -210,8 +276,25 @@ export function updateSettings(s: GameState, patch: Partial<Settings>) {
   assertPhase(s, "lobby", "ended");
   const next: Settings = { ...s.settings };
   if (patch.mode !== undefined) {
-    if (!GAME_MODES.includes(patch.mode as GameMode)) throw new GameError("bad_settings", "Game mode must be Hangman, Emoji Decode or Mixed.");
+    if (!GAME_MODES.includes(patch.mode as GameMode))
+      throw new GameError("bad_settings", "Game mode must be Hangman, Emoji Decode, Most Likely To or Mixed.");
     next.mode = patch.mode;
+  }
+  if (patch.mixedModes !== undefined) {
+    if (!Array.isArray(patch.mixedModes)) throw new GameError("bad_settings", "Pick the modes Mixed should include.");
+    const list = ROUND_MODES.filter((m) => (patch.mixedModes as string[]).includes(m)); // canonical order, no duplicates
+    if (list.length < 2) throw new GameError("bad_settings", "Mixed needs at least two game modes.");
+    next.mixedModes = list;
+  }
+  if (patch.voteSec !== undefined) {
+    if (!VOTE_TIMER_OPTIONS.includes(patch.voteSec)) throw new GameError("bad_settings", "Voting timer must be 15, 20 or 30 seconds.");
+    next.voteSec = patch.voteSec;
+  }
+  if (patch.packs !== undefined) {
+    if (!Array.isArray(patch.packs)) throw new GameError("bad_settings", "Pick at least one question pack.");
+    const packs = [...new Set(patch.packs)].filter((p): p is PackId => PACK_IDS.includes(p as PackId));
+    if (packs.length === 0) throw new GameError("bad_settings", "Pick at least one question pack.");
+    next.packs = packs;
   }
   if (patch.rounds !== undefined) {
     if (!ROUND_OPTIONS.includes(patch.rounds)) throw new GameError("bad_settings", "Rounds must be 5, 10, 15 or 20.");
@@ -265,7 +348,7 @@ export function addPlayer(s: GameState, opts: { nickname: string; tokenHash: str
     joinedAt: ctx.now,
     removed: false,
     powerupsLeft: POWERUPS_PER_GAME,
-    stats: { hints: 0, emojiSolves: 0, livesLost: 0, bestSolveMs: null, solves: 0, worstRank: null, stumped: 0 },
+    stats: { hints: 0, emojiSolves: 0, crowns: 0, correctVotes: 0, livesLost: 0, bestSolveMs: null, solves: 0, worstRank: null, stumped: 0 },
     reactionTimes: [],
     guessTimes: [],
   };
@@ -278,10 +361,34 @@ export function removePlayer(s: GameState, playerId: string, ctx: Ctx) {
   const p = getPlayer(s, playerId);
   p.removed = true;
   for (const sub of s.submissions) if (sub.playerId === playerId && sub.status === "pending") sub.status = "removed";
+  for (const q of s.questionSubs) if (q.playerId === playerId && q.status === "pending") q.status = "removed";
   if (s.phase === "round" && s.round) {
     const r = s.round;
     r.participants = r.participants.filter((id) => id !== playerId);
     delete r.progress[playerId];
+    if (r.mode === "mlt") {
+      // Their own vote no longer counts, they stop being an option, and anyone who
+      // voted for them gets their vote back so they can vote again while time remains.
+      const votes = r.votes ?? {};
+      delete votes[playerId];
+      r.candidates = (r.candidates ?? []).filter((id) => id !== playerId);
+      for (const [voter, v] of Object.entries(votes)) {
+        if (v.targetId !== playerId) continue;
+        delete votes[voter];
+        const vp = r.progress[voter];
+        if (vp && vp.status === "voted") {
+          vp.status = "playing";
+          vp.solvedAt = null;
+          vp.voteReset = true;
+        }
+      }
+      if (r.kind === "suddenDeath" && r.candidates.length === 1) {
+        r.sdWinnerId = r.candidates[0];
+        s.winnerId = r.candidates[0];
+        r.crowned = [r.candidates[0]];
+        endRound(s, ctx, "sdWinner");
+      }
+    }
     if (s.suddenDeath) s.suddenDeath.playerIds = s.suddenDeath.playerIds.filter((id) => id !== playerId);
     checkRoundComplete(s, ctx);
   } else if (s.suddenDeath) {
@@ -371,6 +478,53 @@ export function removeSubmission(s: GameState, id: string) {
   const sub = s.submissions.find((x) => x.id === id);
   if (!sub) throw new GameError("not_found", "Submission not found.", 404);
   sub.status = "removed";
+  bump(s);
+}
+
+export function questionKey(text: string): string {
+  return text.toLowerCase().replace(/^who is most likely to /, "").replace(/[^a-z0-9]/g, "");
+}
+
+/** Host-written Most Likely To question (the "Host's Questions" pack). */
+export function addCustomQuestion(s: GameState, text: string, ctx: Ctx) {
+  if (s.customQuestions.length >= 100) throw new GameError("too_many", "Custom questions are full (100 max).");
+  if (s.customQuestions.some((q) => questionKey(q.text) === questionKey(text)))
+    throw new GameError("duplicate", "That question is already on the list.");
+  s.customQuestions.push({ id: ctx.id(), text });
+  if (!s.settings.packs.includes("custom")) s.settings.packs = [...s.settings.packs, "custom"];
+  bump(s);
+}
+
+export function removeCustomQuestion(s: GameState, id: string) {
+  s.customQuestions = s.customQuestions.filter((q) => q.id !== id);
+  if (s.customQuestions.length === 0 && s.settings.packs.includes("custom")) {
+    const packs = s.settings.packs.filter((p) => p !== "custom");
+    s.settings.packs = packs.length ? packs : [...BUILTIN_PACKS];
+  }
+  bump(s);
+}
+
+/** A player's friend-written question (one each; never shown with their name). */
+export function submitQuestion(s: GameState, playerId: string, text: string, ctx: Ctx) {
+  assertPhase(s, "lobby");
+  if (!s.settings.friendWords) throw new GameError("friend_words_off", "Friend-written rounds are turned off.", 409);
+  if (!includesMlt(s)) throw new GameError("wrong_mode", "Questions are only used in Most Likely To rounds.", 409);
+  getPlayer(s, playerId);
+  const existing = s.questionSubs.find((q) => q.playerId === playerId && q.status === "pending");
+  if (existing) existing.text = text;
+  else {
+    if (s.questionSubs.some((q) => q.playerId === playerId && q.status === "removed"))
+      throw new GameError("submission_removed", "The host removed your question. You can't submit another this game.", 409);
+    s.questionSubs.push({ id: ctx.id(), playerId, text, status: "pending" });
+  }
+  bump(s);
+}
+
+export function removeQuestionSub(s: GameState, id: string) {
+  assertPhase(s, "lobby");
+  const q = s.questionSubs.find((x) => x.id === id);
+  if (!q) throw new GameError("not_found", "Question not found.", 404);
+  q.status = "removed";
   bump(s);
 }
 
@@ -485,7 +639,44 @@ export function chooseClue(
   return chooseClue(s, category === "inside" ? "mixed" : category, ctx);
 }
 
+function questionPool(s: GameState, pack: PackId): { text: string }[] {
+  const used = new Set(s.usedQuestions);
+  if (pack === "custom")
+    return s.customQuestions.filter((q) => !used.has(questionKey(q.text)) && !isBlocked(q.text, s.settings.content));
+  return QUESTION_BANK[pack]
+    .filter((e) => (s.settings.content === "pg13" || e.content === "clean") && !used.has(questionKey(questionText(e))))
+    .map((e) => ({ text: questionText(e) }));
+}
+
+/** Question packs that still have unused questions. */
+export function availablePacks(s: GameState): PackId[] {
+  return (s.settings.packs ?? BUILTIN_PACKS).filter((p) => questionPool(s, p).length > 0);
+}
+
+/** Loser Picks options for a round of this mode. */
+export function availableChoices(s: GameState, mode: RoundMode): (CategoryId | PackId)[] {
+  return mode === "mlt" ? availablePacks(s) : availableCategories(s, mode);
+}
+
+export function chooseQuestion(s: GameState, pack: PackId, ctx: Ctx): { text: string; pack: PackId } {
+  const pool = questionPool(s, pack);
+  if (pool.length) return { text: pick(pool, ctx.random).text, pack };
+  const others = availablePacks(s).filter((p) => p !== pack);
+  if (others.length) return chooseQuestion(s, pick(others, ctx.random), ctx);
+  const anyBuiltin = BUILTIN_PACKS.filter((p) => questionPool(s, p).length > 0);
+  if (anyBuiltin.length) return chooseQuestion(s, pick(anyBuiltin, ctx.random), ctx);
+  s.usedQuestions = [];
+  return chooseQuestion(s, pack === "custom" ? "friends" : pack, ctx);
+}
+
+function friendQuestionAvailable(s: GameState, roundNumber: number) {
+  if (!s.settings.friendWords || !s.questionRoundPlan.includes(roundNumber)) return null;
+  const pending = s.questionSubs.filter((q) => q.status === "pending" && !getRemoved(s, q.playerId) && !isBlocked(q.text, s.settings.content));
+  return pending.length ? pending : null;
+}
+
 function friendWordAvailable(s: GameState, roundNumber: number, mode: RoundMode = roundModeFor(s, roundNumber)) {
+  if (mode === "mlt") return null; // Most Likely To uses friend-written questions instead
   if (!s.settings.friendWords || !s.friendRoundPlan.includes(roundNumber)) return null;
   if (activePlayers(s).length < 2) return null;
   const pending = s.submissions.filter(
@@ -503,6 +694,10 @@ function friendWordAvailable(s: GameState, roundNumber: number, mode: RoundMode 
 export function startGame(s: GameState, ctx: Ctx) {
   assertPhase(s, "lobby");
   if (activePlayers(s).length < 1) throw new GameError("no_players", "Wait for at least one player to join.", 409);
+  if (s.settings.mode === "mlt" && activePlayers(s).length < MLT.minPlayers)
+    throw new GameError("need_players", "Most Likely To needs at least 3 players. Wait for more friends to join.", 409);
+  s.hold = null;
+  s.questionRoundPlan = [];
   s.history = [];
   s.roundsPlayed = 0;
   s.winnerId = null;
@@ -517,6 +712,11 @@ export function startGame(s: GameState, ctx: Ctx) {
     const count = Math.min(pending.length, Math.round(s.settings.rounds / 3));
     const rounds = Array.from({ length: s.settings.rounds }, (_, i) => i + 1);
     s.friendRoundPlan = shuffle(rounds, ctx.random).slice(0, count).sort((a, b) => a - b);
+    // About a third of the Most Likely To rounds use a player-submitted question.
+    const mltRounds = rounds.filter((n) => roundModeFor(s, n) === "mlt");
+    const pendingQs = s.questionSubs.filter((q) => q.status === "pending" && !getRemoved(s, q.playerId));
+    const qCount = Math.min(pendingQs.length, Math.round(mltRounds.length / 3));
+    s.questionRoundPlan = shuffle(mltRounds, ctx.random).slice(0, qCount).sort((a, b) => a - b);
   }
   startRound(s, ctx);
 }
@@ -542,11 +742,13 @@ function newProgress(lives: number): PlayerProgress {
   };
 }
 
-export function startRound(s: GameState, ctx: Ctx, category?: CategoryId | null) {
+export function startRound(s: GameState, ctx: Ctx, choice?: CategoryId | PackId | null) {
   const n = s.roundsPlayed + 1;
   const kind = n >= s.settings.rounds ? "final" : "normal";
   const mode = roundModeFor(s, n);
   const active = activePlayers(s);
+  if (mode === "mlt") return startMltRound(s, ctx, n, kind, (choice as PackId | null | undefined) ?? (s.nextCategory as PackId | null));
+  const category = choice as CategoryId | null | undefined;
 
   let answer: string, hint: string, cat: CategoryId | "friend", source: WordSource;
   let clue: string | null = null;
@@ -564,7 +766,11 @@ export function startRound(s: GameState, ctx: Ctx, category?: CategoryId | null)
     authorId = sub.playerId;
   } else {
     const available = availableCategories(s, mode);
-    const want = category ?? s.nextCategory ?? (available.length ? pick(available, ctx.random) : pick(s.settings.categories, ctx.random));
+    const validChoice = (c: unknown): c is CategoryId => typeof c === "string" && (s.settings.categories as string[]).includes(c);
+    const want =
+      (validChoice(category) ? category : null) ??
+      (validChoice(s.nextCategory) ? s.nextCategory : null) ??
+      (available.length ? pick(available, ctx.random) : pick(s.settings.categories, ctx.random));
     if (mode === "emoji") {
       const c = chooseClue(s, want, ctx);
       ({ answer, clue, alternates } = c);
@@ -619,6 +825,84 @@ export function startRound(s: GameState, ctx: Ctx, category?: CategoryId | null)
   s.nextCategory = null;
   s.loserPick = null;
   s.dare = null;
+  s.hold = null;
+  bump(s);
+}
+
+/** Most Likely To round. Everyone active votes, and everyone active is an option. */
+function startMltRound(s: GameState, ctx: Ctx, n: number, kind: "normal" | "final", pack: PackId | null) {
+  const active = activePlayers(s);
+  if (active.length < MLT.minPlayers) {
+    // Most Likely To-only game: hold and tell the host (Mixed skips these rounds instead).
+    s.hold = "needPlayers";
+    if (s.phase === "loserPick" || s.phase === "dare") s.phase = "reveal";
+    s.loserPick = null;
+    s.dare = null;
+    bump(s);
+    return;
+  }
+  let question: string;
+  let category: PackId | "friend";
+  let source: WordSource = "builtin";
+  const friendQs = friendQuestionAvailable(s, n);
+  if (friendQs) {
+    const sub = pick(friendQs, ctx.random);
+    sub.status = "used";
+    question = sub.text;
+    category = "friend";
+    source = "friend";
+  } else {
+    const packs = availablePacks(s);
+    const want = pack && (s.settings.packs as string[]).includes(pack) ? pack : packs.length ? pick(packs, ctx.random) : pick(s.settings.packs, ctx.random);
+    const q = chooseQuestion(s, want, ctx);
+    question = q.text;
+    category = q.pack;
+    source = q.pack === "custom" ? "inside" : "builtin";
+  }
+  s.usedQuestions.push(questionKey(question));
+  const ids = active.map((p) => p.id);
+  const durationMs = (s.settings.voteSec ?? 20) * 1000;
+  const progress: Record<string, PlayerProgress> = {};
+  for (const id of ids) progress[id] = newProgress(0);
+  s.roundsPlayed = n;
+  s.round = {
+    id: ctx.id(),
+    mode: "mlt",
+    number: n,
+    kind,
+    sdAttempt: 0,
+    category,
+    answer: "",
+    hint: "",
+    clue: null,
+    alternates: [],
+    hostHints: [],
+    question,
+    candidates: [...ids],
+    votes: {},
+    totals: null,
+    crowned: [],
+    source,
+    authorId: null, // friend-written questions stay anonymous and earn no author points
+    startedAt: ctx.now,
+    durationMs,
+    deadline: ctx.now + durationMs,
+    pausedRemainingMs: null,
+    participants: ids,
+    progress,
+    multiplier: kind === "final" ? 2 : 1,
+    endedAt: null,
+    endReason: null,
+    authorBonus: 0,
+    stumpedCount: 0,
+    sdWinnerId: null,
+  };
+  s.phase = "round";
+  s.paused = false;
+  s.nextCategory = null;
+  s.loserPick = null;
+  s.dare = null;
+  s.hold = null;
   bump(s);
 }
 
@@ -631,6 +915,7 @@ function startSuddenDeath(s: GameState, ctx: Ctx) {
     return;
   }
   const mode = suddenDeathMode(s);
+  if (mode === "mlt") return startMltSuddenDeath(s, ctx);
   const available = availableCategories(s, mode).filter((c) => c !== "inside");
   const cat = available.length ? pick(available, ctx.random) : pick(BUILTIN_CATEGORIES, ctx.random);
   const w =
@@ -673,6 +958,59 @@ function startSuddenDeath(s: GameState, ctx: Ctx) {
   bump(s);
 }
 
+/** Most Likely To-only tiebreak: the non-tied players vote on the tied players. */
+function startMltSuddenDeath(s: GameState, ctx: Ctx) {
+  const sd = s.suddenDeath!;
+  const tied = sd.playerIds;
+  const voters = activePlayers(s)
+    .map((p) => p.id)
+    .filter((id) => !tied.includes(id));
+  if (voters.length === 0) {
+    // Nobody left to vote: pick the winner at random.
+    s.winnerId = pick(tied, ctx.random);
+    finishGame(s, ctx);
+    return;
+  }
+  const durationMs = (s.settings.voteSec ?? 20) * 1000;
+  const progress: Record<string, PlayerProgress> = {};
+  for (const id of voters) progress[id] = newProgress(0);
+  s.round = {
+    id: ctx.id(),
+    mode: "mlt",
+    number: s.roundsPlayed,
+    kind: "suddenDeath",
+    sdAttempt: sd.attempt,
+    category: "friends",
+    answer: "",
+    hint: "",
+    clue: null,
+    alternates: [],
+    hostHints: [],
+    question: MLT_SUDDEN_DEATH_QUESTION,
+    candidates: [...tied],
+    votes: {},
+    totals: null,
+    crowned: [],
+    source: "builtin",
+    authorId: null,
+    startedAt: ctx.now,
+    durationMs,
+    deadline: ctx.now + durationMs,
+    pausedRemainingMs: null,
+    participants: voters,
+    progress,
+    multiplier: 1,
+    endedAt: null,
+    endReason: null,
+    authorBonus: 0,
+    stumpedCount: 0,
+    sdWinnerId: null,
+  };
+  s.phase = "round";
+  s.paused = false;
+  bump(s);
+}
+
 function currentProgress(s: GameState, playerId: string): { r: Round; pr: PlayerProgress } {
   assertPhase(s, "round");
   const r = s.round!;
@@ -681,6 +1019,7 @@ function currentProgress(s: GameState, playerId: string): { r: Round; pr: Player
   if (r.authorId === playerId) throw new GameError("sitting_out", "Your word is being played — sit back and enjoy.", 409);
   const pr = r.progress[playerId];
   if (!pr) throw new GameError("not_playing", "You'll join from the next round.", 409);
+  if (pr.status === "voted") throw new GameError("vote_locked", "Your vote is locked.", 409);
   if (pr.status !== "playing") throw new GameError("finished", "You're done for this round.", 409);
   return { r, pr };
 }
@@ -713,6 +1052,7 @@ export function guess(s: GameState, playerId: string, rawLetter: unknown, ctx: C
   if (!letter) throw new GameError("bad_letter", "Guess a single letter A–Z.");
   const { r, pr } = currentProgress(s, playerId);
   if (r.mode === "emoji") throw new GameError("wrong_mode", "This is an Emoji Decode round — type the answer.", 409);
+  if (r.mode === "mlt") throw new GameError("wrong_mode", "This is a Most Likely To round — vote for a player.", 409);
   if (pr.frozenUntil > ctx.now) throw new GameError("frozen", "Your keyboard is frozen! ❄️", 409);
   const p = getPlayer(s, playerId);
   p.guessTimes = rateLimit(p.guessTimes, ctx.now, 1000, 12);
@@ -739,6 +1079,7 @@ export function guess(s: GameState, playerId: string, rawLetter: unknown, ctx: C
 export function takeHint(s: GameState, playerId: string, ctx: Ctx) {
   const { r, pr } = currentProgress(s, playerId);
   if (r.mode === "emoji") throw new GameError("wrong_mode", "In Emoji Decode the host drops the hints.", 409);
+  if (r.mode === "mlt") throw new GameError("wrong_mode", "There are no hints in Most Likely To.", 409);
   if (r.kind === "suddenDeath") throw new GameError("no_hints", "No hints in Sudden Death!", 409);
   if (pr.hintUsed) return r.hint;
   pr.hintUsed = true;
@@ -755,7 +1096,9 @@ export function activatePowerup(s: GameState, playerId: string, type: PowerUp, t
   const p = getPlayer(s, playerId);
   if (p.powerupsLeft <= 0) throw new GameError("no_powerups_left", "You've used both power-ups this game.", 409);
 
-  if (type === "freeze") {
+  if (r.mode === "mlt") {
+    mltPowerup(s, r, pr, playerId, type, targetId, ctx);
+  } else if (type === "freeze") {
     if (!targetId || targetId === playerId) throw new GameError("bad_target", "Pick a rival to freeze.");
     const tp = r.progress[targetId];
     if (!tp || tp.status !== "playing") throw new GameError("bad_target", "That player isn't solving right now.", 409);
@@ -789,6 +1132,95 @@ export function activatePowerup(s: GameState, playerId: string, type: PowerUp, t
   pr.powerupsUsed.push(type);
   bump(s);
   if (s.phase === "round") checkRoundComplete(s, ctx);
+}
+
+/** Current vote leaders (weighted), for the Peek power-up. Never exposes who voted for whom. */
+function currentLeaders(r: Round): { leaderIds: string[]; votes: number } {
+  const totals: Record<string, number> = {};
+  for (const v of Object.values(r.votes ?? {})) totals[v.targetId] = (totals[v.targetId] ?? 0) + v.weight;
+  const max = Math.max(0, ...Object.values(totals));
+  return { leaderIds: max > 0 ? Object.keys(totals).filter((id) => totals[id] === max) : [], votes: max };
+}
+
+/** Most Likely To power-ups: Freeze a rival's voting screen, Peek at the leader, Double Vote. */
+function mltPowerup(s: GameState, r: Round, pr: PlayerProgress, playerId: string, type: PowerUp, targetId: string | null, ctx: Ctx) {
+  if (type === "freeze") {
+    if (!targetId || targetId === playerId) throw new GameError("bad_target", "Pick a rival to freeze.");
+    const tp = r.progress[targetId];
+    if (!tp || tp.status !== "playing") throw new GameError("bad_target", "That player has already voted.", 409);
+    if (tp.frozenOnce) throw new GameError("already_frozen", "That player was already frozen this round.", 409);
+    if (remainingMs(r, ctx.now) <= MLT.freezeCutoffMs) throw new GameError("too_late", "Too late — no freezes in the final 5 seconds.", 409);
+    tp.frozenOnce = true;
+    tp.frozenUntil = ctx.now + FREEZE_MS;
+  } else if (type === "reveal") {
+    pr.peek = currentLeaders(r); // private to this player
+  } else if (type === "extraLife") {
+    if (pr.doubleVote) throw new GameError("already_double", "Double Vote is already on.", 409);
+    pr.doubleVote = true;
+  } else {
+    throw new GameError("bad_powerup", "Unknown power-up.");
+  }
+  void s;
+}
+
+/** Most Likely To: lock in a vote. One per player per round; you can vote for yourself. */
+export function castVote(s: GameState, playerId: string, targetId: unknown, ctx: Ctx) {
+  const { r, pr } = currentProgress(s, playerId);
+  if (r.mode !== "mlt") throw new GameError("wrong_mode", "There's no vote this round.", 409);
+  if (pr.frozenUntil > ctx.now) throw new GameError("frozen", "Your voting screen is frozen! ❄️", 409);
+  const p = getPlayer(s, playerId);
+  p.voteTimes = rateLimit(p.voteTimes ?? [], ctx.now, 5000, 5, 300);
+  if (typeof targetId !== "string" || !(r.candidates ?? []).includes(targetId) || getRemoved(s, targetId))
+    throw new GameError("bad_vote", "That player isn't an option this round.");
+  r.votes ??= {};
+  r.votes[playerId] = { targetId, weight: pr.doubleVote ? 2 : 1 };
+  pr.status = "voted";
+  pr.solvedAt = ctx.now;
+  pr.voteReset = false;
+  bump(s);
+  checkRoundComplete(s, ctx);
+  return { locked: true };
+}
+
+/** Score a finished Most Likely To round, then forget who voted for whom. */
+function scoreVotes(s: GameState, r: Round, ctx: Ctx) {
+  const cands = (r.candidates ?? []).filter((id) => !getRemoved(s, id));
+  const totals: Record<string, number> = {};
+  for (const c of cands) totals[c] = 0;
+  for (const [voter, v] of Object.entries(r.votes ?? {})) {
+    if (getRemoved(s, voter) || !r.progress[voter]) continue;
+    if (v.targetId in totals) totals[v.targetId] += v.weight;
+  }
+  const max = Math.max(0, ...Object.values(totals));
+  const top = max > 0 ? cands.filter((c) => totals[c] === max) : [];
+  r.totals = totals;
+  if (r.kind === "suddenDeath") {
+    // A tie (or no votes) is settled at random.
+    const pool = top.length ? top : cands;
+    const winner = pool.length ? pick(pool, ctx.random) : null;
+    r.crowned = winner ? [winner] : [];
+    r.sdWinnerId = winner;
+    s.winnerId = winner;
+  } else {
+    r.crowned = top; // everyone tied for the most votes is crowned; no votes → nobody
+    for (const voter of r.participants) {
+      const pr = r.progress[voter];
+      if (!pr) continue;
+      const v = r.votes?.[voter];
+      pr.voteResult = !v ? "missed" : top.includes(v.targetId) ? "correct" : "wrong";
+      if (pr.voteResult === "correct") {
+        addScore(s, voter, MLT.correctVote * r.multiplier, pr);
+        const pl = s.players.find((x) => x.id === voter);
+        if (pl) pl.stats.correctVotes = (pl.stats.correctVotes ?? 0) + 1;
+      }
+    }
+    for (const c of top) {
+      addScore(s, c, MLT.crowned * r.multiplier, r.progress[c]);
+      const pl = s.players.find((x) => x.id === c);
+      if (pl) pl.stats.crowns = (pl.stats.crowns ?? 0) + 1;
+    }
+  }
+  r.votes = {}; // privacy: the voter → vote mapping is never kept after scoring
 }
 
 /** Emoji Decode: submit a typed answer. Up to 3 attempts (1 in Sudden Death). */
@@ -857,12 +1289,20 @@ export function endRound(s: GameState, ctx: Ctx, reason: NonNullable<Round["endR
       p.powerupsLeft += pr.powerupsUsed.length;
     }
     if (r.kind === "suddenDeath") s.winnerId = null;
+    if (r.mode === "mlt") {
+      // Skipped before the reveal: votes are discarded unseen, nobody is crowned.
+      r.votes = {};
+      r.totals = null;
+      r.crowned = [];
+    }
     s.phase = "reveal";
     bump(s);
     return;
   }
 
-  if (r.kind !== "suddenDeath") {
+  if (r.mode === "mlt") scoreVotes(s, r, ctx);
+
+  if (r.kind !== "suddenDeath" && r.mode !== "mlt") {
     const failed = r.participants.filter((id) => r.progress[id] && r.progress[id].status !== "solved").length;
     r.stumpedCount = failed;
     if (r.source === "friend" && r.authorId && !getRemoved(s, r.authorId)) {
@@ -895,7 +1335,7 @@ export function endRound(s: GameState, ctx: Ctx, reason: NonNullable<Round["endR
       const pr = r.progress[p.id];
       results[p.id] = {
         points: pr ? pr.points : p.id === r.authorId ? r.authorBonus : 0,
-        solved: pr?.status === "solved",
+        solved: r.mode === "mlt" ? pr?.voteResult === "correct" : pr?.status === "solved",
         solveMs: pr?.solveMs ?? null,
         wrong: pr?.wrong.length ?? 0,
         hint: pr?.hintUsed ?? false,
@@ -907,7 +1347,7 @@ export function endRound(s: GameState, ctx: Ctx, reason: NonNullable<Round["endR
       mode: r.mode,
       number: r.number,
       kind: r.kind,
-      answer: r.answer,
+      answer: r.mode === "mlt" ? (r.question ?? "") : r.answer,
       category: r.category,
       source: r.source,
       authorId: r.authorId,
@@ -1009,8 +1449,10 @@ function proceedToNextRound(s: GameState, ctx: Ctx) {
   const n = s.roundsPlayed + 1;
   const r = s.round;
   const mode = roundModeFor(s, n);
-  const options = availableCategories(s, mode);
-  if (!friendWordAvailable(s, n, mode) && options.length >= 2 && r && r.kind !== "suddenDeath" && r.endReason !== "skipped") {
+  if (mode === "mlt" && activePlayers(s).length < MLT.minPlayers) return startRound(s, ctx); // holds and tells the host
+  const options = availableChoices(s, mode);
+  const friendRound = mode === "mlt" ? !!friendQuestionAvailable(s, n) : !!friendWordAvailable(s, n, mode);
+  if (!friendRound && options.length >= 2 && r && r.kind !== "suddenDeath" && r.endReason !== "skipped") {
     const candidates = r.participants
       .filter((id) => !getRemoved(s, id) && r.progress[id])
       .map((id) => ({ id, pts: r.progress[id].points }));
@@ -1018,7 +1460,7 @@ function proceedToNextRound(s: GameState, ctx: Ctx) {
       const low = Math.min(...candidates.map((c) => c.pts));
       const losers = candidates.filter((c) => c.pts === low);
       const loser = pick(losers, ctx.random);
-      s.loserPick = { playerId: loser.id, options, deadline: ctx.now + LOSER_PICK_MS };
+      s.loserPick = { playerId: loser.id, kind: mode === "mlt" ? "pack" : "category", options, deadline: ctx.now + LOSER_PICK_MS };
       s.phase = "loserPick";
       s.dare = null;
       bump(s);
@@ -1028,7 +1470,7 @@ function proceedToNextRound(s: GameState, ctx: Ctx) {
   startRound(s, ctx);
 }
 
-export function resolveLoserPick(s: GameState, category: CategoryId | null, ctx: Ctx) {
+export function resolveLoserPick(s: GameState, category: CategoryId | PackId | null, ctx: Ctx) {
   assertPhase(s, "loserPick");
   const lp = s.loserPick!;
   const cat = category ?? pick(lp.options, ctx.random);
@@ -1039,8 +1481,8 @@ export function pickCategory(s: GameState, playerId: string, category: unknown, 
   assertPhase(s, "loserPick");
   const lp = s.loserPick!;
   if (lp.playerId !== playerId) throw new GameError("not_picker", "It's not your pick.", 403);
-  if (!lp.options.includes(category as CategoryId)) throw new GameError("bad_category", "Pick one of the listed categories.");
-  resolveLoserPick(s, category as CategoryId, ctx);
+  if (!lp.options.includes(category as CategoryId)) throw new GameError("bad_category", "Pick one of the listed options.");
+  resolveLoserPick(s, category as CategoryId | PackId, ctx);
 }
 
 // ---------------------------------------------------------------------------
@@ -1117,6 +1559,7 @@ export function finishGame(s: GameState, ctx: Ctx) {
   s.paused = false;
   s.loserPick = null;
   s.dare = null;
+  s.hold = null;
   s.endedAt = ctx.now;
   bump(s);
 }
@@ -1132,9 +1575,12 @@ export function playAgain(s: GameState, ctx: Ctx) {
   for (const p of s.players) {
     p.score = 0;
     p.powerupsLeft = POWERUPS_PER_GAME;
-    p.stats = { hints: 0, emojiSolves: 0, livesLost: 0, bestSolveMs: null, solves: 0, worstRank: null, stumped: 0 };
+    p.stats = { hints: 0, emojiSolves: 0, crowns: 0, correctVotes: 0, livesLost: 0, bestSolveMs: null, solves: 0, worstRank: null, stumped: 0 };
   }
   s.submissions = s.submissions.filter((x) => x.status === "pending");
+  s.questionSubs = s.questionSubs.filter((x) => x.status === "pending");
+  s.questionRoundPlan = [];
+  s.hold = null;
   s.phase = "lobby";
   s.paused = false;
   s.round = null;
