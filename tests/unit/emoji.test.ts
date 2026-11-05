@@ -495,3 +495,21 @@ describe("existing saved rooms", () => {
     expect(upgradeState(JSON.parse(JSON.stringify(fresh)))).toEqual(fresh);
   });
 });
+
+describe("answer rate limit is separate from Hangman guessing", () => {
+  it("fast Hangman guessing right before an Emoji round never blocks the first answer", () => {
+    const h = harness({ players: 1, settings: { mode: "mixed", rounds: 5 } });
+    startGame(h.s, h.ctx());
+    forceWord(h.s, "Abcdefghij Klmnop");
+    for (const l of "ABCDEFGHIJ") {
+      h.advance(100);
+      guess(h.s, h.ids[0], l, h.ctx());
+    }
+    skipWord(h.s, h.ctx());
+    next(h.s, h.ctx());
+    while (h.s.phase !== "round") next(h.s, h.ctx());
+    expect(h.s.round!.mode).toBe("emoji");
+    forceClue(h.s, "🦈🏖️", "Jaws");
+    expect(submitAnswer(h.s, h.ids[0], "Jaws", h.ctx()).correct).toBe(true);
+  });
+});

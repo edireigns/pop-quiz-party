@@ -1,15 +1,27 @@
 import type { Browser, Page } from "@playwright/test";
 import postgres from "postgres";
 
-export const sql = postgres(process.env.E2E_DATABASE_URL ?? "postgres://postgres:postgres@localhost:5432/popquiz_e2e", {
-  prepare: false,
-  max: 2,
-  onnotice: () => {},
-});
+// One lazily-created connection per worker; spec files share it, and closeDb() lets the next file reconnect.
+let client: ReturnType<typeof postgres> | null = null;
+function conn() {
+  client ??= postgres(process.env.E2E_DATABASE_URL ?? "postgres://postgres:postgres@localhost:5432/popquiz_e2e", {
+    prepare: false,
+    max: 2,
+    onnotice: () => {},
+  });
+  return client;
+}
+export const sql = {
+  end: async () => {
+    const c = client;
+    client = null;
+    await c?.end();
+  },
+};
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 export async function dbState(code: string): Promise<any> {
-  const rows = await sql`select state from rooms where code = ${code}`;
+  const rows = await conn()`select state from rooms where code = ${code}`;
   return rows[0]?.state;
 }
 

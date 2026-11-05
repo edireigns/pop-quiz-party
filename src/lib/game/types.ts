@@ -81,6 +81,8 @@ export interface Player {
   reactionTimes: number[];
   /** timestamps (ms) of recent guesses, for rate limiting */
   guessTimes: number[];
+  /** timestamps (ms) of recent Emoji Decode answers (own limiter, so fast Hangman guessing never blocks an answer) */
+  answerTimes?: number[];
 }
 
 export type ProgressStatus = "playing" | "solved" | "out";

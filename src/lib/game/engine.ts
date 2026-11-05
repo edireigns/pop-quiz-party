@@ -800,7 +800,7 @@ export function submitAnswer(s: GameState, playerId: string, raw: unknown, ctx: 
   if (r.mode !== "emoji") throw new GameError("wrong_mode", "This is a Hangman round — guess letters.", 409);
   if (pr.frozenUntil > ctx.now) throw new GameError("frozen", "Your answer box is frozen! ❄️", 409);
   const p = getPlayer(s, playerId);
-  p.guessTimes = rateLimit(p.guessTimes, ctx.now, 5000, 5, 400);
+  p.answerTimes = rateLimit(p.answerTimes ?? [], ctx.now, 5000, 5, 400);
   const norm = normalizeAnswer(text);
   if (!norm) throw new GameError("bad_answer", "Type an answer with letters or numbers.");
   if (pr.wrong.some((w) => normalizeAnswer(w) === norm)) throw new GameError("already_guessed", "You already tried that one.", 409);
