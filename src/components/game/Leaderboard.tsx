@@ -117,6 +117,10 @@ export function TvLeaderboard({
                   <span className="font-bold text-red">💥 out</span>
                 ) : r.status === "waiting" ? (
                   <span className="text-mute">next round</span>
+                ) : r.status === "voted" ? (
+                  <span className="font-bold text-lime">🗳️ voted</span>
+                ) : mode === "mlt" ? (
+                  <span className="text-mute">voting…</span>
                 ) : mode === "emoji" ? (
                   <>
                     <AttemptPips left={r.lives} />

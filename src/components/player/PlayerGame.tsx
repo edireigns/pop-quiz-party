@@ -133,10 +133,17 @@ function Lobby({ view, act }: { view: PlayerView; act: (b: Record<string, unknow
         <p className="font-display text-3xl font-black">You&apos;re in! 🎉</p>
         <p className="mt-2 text-mute">Eyes on the TV — the host will start soon.</p>
         <p className="mt-2 font-bold text-cyan">
-          {view.mode === "emoji" ? "😀 Tonight: Emoji Decode" : view.mode === "mixed" ? "🔀 Tonight: Hangman + Emoji Decode" : "🔤 Tonight: Hangman"}
+          {view.mode === "emoji"
+            ? "😀 Tonight: Emoji Decode"
+            : view.mode === "mlt"
+              ? "👑 Tonight: Most Likely To"
+              : view.mode === "mixed"
+                ? `🔀 Tonight: ${view.mixedModes.map((m) => MODE_SHORT[m]).join(" + ")}`
+                : "🔤 Tonight: Hangman"}
         </p>
       </Panel>
-      {view.friendWords && (
+      {view.friendWords && hasMltMode(view) && <QuestionSubmit view={view} act={act} />}
+      {view.friendWords && view.mode !== "mlt" && (
         <Panel className="flex flex-col gap-3">
           <h2 className="font-display text-xl font-bold">🤝 Submit a word for the group</h2>
           {sub?.status === "removed" ? (
@@ -220,6 +227,7 @@ function RoundScreen({ view, room, act }: { view: PlayerView; room: Room; act: (
     </Panel>
   );
 
+  if (r.mode === "mlt") return <MltRound view={view} room={room} act={act} header={header} />;
   if (my.state === "playing" && r.mode === "emoji") return <EmojiPlaying view={view} room={room} act={act} header={header} />;
   if (my.state === "playing") return <Playing view={view} room={room} act={act} header={header} />;
 
@@ -605,11 +613,331 @@ function EmojiPlaying({ view, room, act, header }: { view: PlayerView; room: Roo
 }
 
 // ---------------------------------------------------------------------------
+// Most Likely To
+// ---------------------------------------------------------------------------
+const MODE_SHORT = { hangman: "Hangman", emoji: "Emoji Decode", mlt: "Most Likely To" } as const;
+
+function hasMltMode(view: PlayerView) {
+  return view.mode === "mlt" || (view.mode === "mixed" && view.mixedModes.includes("mlt"));
+}
+
+function QuestionSubmit({ view, act }: { view: PlayerView; act: (b: Record<string, unknown>) => Promise<unknown> }) {
+  const [text, setText] = useState("");
+  const sub = view.questionSub;
+  return (
+    <Panel className="flex flex-col gap-3">
+      <h2 className="font-display text-xl font-bold">👑 Submit a Most Likely To question</h2>
+      {sub?.status === "removed" ? (
+        <p className="text-mute">The host removed your question. No worries — you&apos;ll still vote every round.</p>
+      ) : (
+        <>
+          <p className="text-sm text-mute">
+            One per player, 10–120 characters. Keep it playful and kind. It&apos;s always anonymous — nobody sees who wrote it.
+          </p>
+          {sub && (
+            <p className="rounded-xl bg-stage px-3 py-2" role="status">
+              Submitted: <strong>{sub.text}</strong>
+            </p>
+          )}
+          <form
+            className="flex flex-col gap-2"
+            onSubmit={async (e) => {
+              e.preventDefault();
+              if (await act({ action: "submitQuestion", text })) setText("");
+            }}
+          >
+            <label htmlFor="fq" className="text-sm font-bold">
+              Who is most likely to…
+            </label>
+            <input
+              id="fq"
+              value={text}
+              maxLength={120}
+              onChange={(e) => setText(e.target.value)}
+              placeholder="adopt a goat named Kevin"
+              className="min-h-12 rounded-xl border-2 border-line bg-stage px-3"
+            />
+            <Button type="submit" variant="pink" disabled={text.trim().length < 10}>
+              {sub ? "Replace my question" : "Submit my question"}
+            </Button>
+          </form>
+        </>
+      )}
+    </Panel>
+  );
+}
+
+function MltRound({ view, room, act, header }: { view: PlayerView; room: Room; act: (b: Record<string, unknown>) => Promise<unknown>; header: React.ReactNode }) {
+  const my = view.my!;
+  const r = view.round!;
+  if (my.state === "playing") return <MltVoting view={view} room={room} act={act} header={header} />;
+  if (my.state === "voted")
+    return (
+      <>
+        {header}
+        <Panel className="flex flex-col items-center gap-3 py-6 text-center">
+          <p className="text-6xl" aria-hidden>
+            🔒
+          </p>
+          <p className="font-display text-4xl font-black text-lime" role="status">
+            Vote locked
+          </p>
+          <p className="text-mute">{r.question}</p>
+          {my.peek && <PeekNote peek={my.peek} />}
+          <p className="text-sm text-mute">
+            {r.answered.done} of {r.answered.total} votes in. Watch the TV for the reveal!
+          </p>
+        </Panel>
+        <Panel>
+          <Reactions act={act} />
+        </Panel>
+      </>
+    );
+  const inSd = r.kind === "suddenDeath" && view.suddenDeath?.playerIds.includes(view.me.id);
+  return (
+    <>
+      {header}
+      <Panel className="text-center">
+        <p className="text-6xl" aria-hidden>
+          {inSd ? "😬" : "👀"}
+        </p>
+        <p className="font-display mt-2 text-2xl font-black">{inSd ? "You're in the Sudden Death!" : "You're up next round"}</p>
+        <p className="mt-2 text-mute">{inSd ? "Everyone else is voting on who deserves the crown. Fingers crossed!" : r.question}</p>
+      </Panel>
+      <Panel>
+        <Reactions act={act} />
+      </Panel>
+    </>
+  );
+}
+
+function PeekNote({ peek }: { peek: { names: string[]; votes: number } }) {
+  return (
+    <p className="rounded-xl bg-stage px-3 py-2 font-bold text-cyan" role="status">
+      👀 Peek:{" "}
+      {peek.names.length === 0
+        ? "no votes yet when you peeked"
+        : `${peek.names.join(" & ")} ${peek.names.length > 1 ? "were tied" : "was leading"} with ${peek.votes} vote${peek.votes === 1 ? "" : "s"}`}
+    </p>
+  );
+}
+
+function MltVoting({ view, room, act, header }: { view: PlayerView; room: Room; act: (b: Record<string, unknown>) => Promise<unknown>; header: React.ReactNode }) {
+  const my = view.my!;
+  const r = view.round!;
+  const now = useTicker(250, room.serverNow);
+  const frozenMs = Math.max(0, my.frozenUntil - now);
+  const remaining = useRemaining(r.timer, room.serverNow);
+  const [choice, setChoice] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [freezePicker, setFreezePicker] = useState(false);
+  const sd = r.kind === "suddenDeath";
+  const disabled = view.paused || frozenMs > 0 || remaining <= 0;
+  const chosen = r.candidates.find((c) => c.id === choice) ?? null;
+
+  return (
+    <>
+      {header}
+      <Panel className="flex flex-col gap-2 py-4 text-center">
+        <h2 className="font-display text-2xl leading-tight font-black text-yellow">{r.question}</h2>
+        {my.voteReset && (
+          <p className="rounded-xl bg-orange px-3 py-2 font-bold text-stage" role="alert">
+            The player you voted for left the game — please vote again.
+          </p>
+        )}
+        {my.doubleVote && <p className="font-bold text-pink">✌️ Double Vote is on — your vote counts twice</p>}
+        {my.peek && <PeekNote peek={my.peek} />}
+      </Panel>
+
+      <div className="relative">
+        <ul
+          className="flex max-h-[46dvh] flex-col gap-2 overflow-y-auto overscroll-contain rounded-2xl pr-1"
+          role="radiogroup"
+          aria-label="Vote for a player"
+        >
+          {r.candidates.map((c) => {
+            const on = c.id === choice;
+            return (
+              <li key={c.id}>
+                <button
+                  type="button"
+                  role="radio"
+                  aria-checked={on}
+                  disabled={disabled || busy}
+                  onClick={() => setChoice(c.id)}
+                  className={`font-display flex min-h-14 w-full items-center justify-between rounded-2xl border-2 px-4 text-left text-xl font-bold transition ${
+                    on ? "border-yellow bg-yellow text-stage" : "border-line bg-panel-2 text-ink"
+                  } disabled:opacity-60`}
+                >
+                  <span className="truncate">{c.nickname}</span>
+                  {c.id === view.me.id && <span className={`text-sm font-normal ${on ? "text-stage" : "text-mute"}`}>(you)</span>}
+                </button>
+              </li>
+            );
+          })}
+        </ul>
+        {frozenMs > 0 && (
+          <div className="absolute inset-0 flex items-center justify-center rounded-2xl bg-cyan/85 text-center" role="alert">
+            <p className="font-display text-3xl font-black text-stage">❄️ FROZEN {Math.ceil(frozenMs / 1000)}s</p>
+          </div>
+        )}
+        {view.paused && (
+          <div className="absolute inset-0 flex items-center justify-center rounded-2xl bg-stage/90" role="status">
+            <p className="font-display text-3xl font-black">⏸ Paused</p>
+          </div>
+        )}
+      </div>
+      <Button
+        big
+        variant="pink"
+        disabled={!chosen || disabled || busy}
+        onClick={async () => {
+          if (!chosen) return;
+          setBusy(true);
+          await act({ action: "vote", targetId: chosen.id });
+          setBusy(false);
+        }}
+      >
+        {chosen ? `🔒 Lock vote: ${chosen.nickname}` : "Pick a player to vote"}
+      </Button>
+
+      {!sd && (
+        <div className="grid grid-cols-2 gap-2">
+          <div className="col-span-2 text-center text-sm text-mute" aria-label={`${view.me.powerupsLeft} power-ups left this game`}>
+            ⚡ Power-ups left: <strong className="text-ink">{view.me.powerupsLeft}</strong>
+          </div>
+          <Button variant="primary" disabled={disabled || view.me.powerupsLeft <= 0 || my.freezeTargets.length === 0} onClick={() => setFreezePicker(true)}>
+            ❄️ Freeze rival
+          </Button>
+          <Button variant="lime" disabled={disabled || view.me.powerupsLeft <= 0} onClick={() => act({ action: "powerup", type: "reveal" })}>
+            👀 Peek at leader
+          </Button>
+          <Button
+            variant="yellow"
+            className="col-span-2"
+            disabled={disabled || view.me.powerupsLeft <= 0 || my.doubleVote}
+            onClick={() => act({ action: "powerup", type: "extraLife" })}
+          >
+            ✌️ Double Vote
+          </Button>
+        </div>
+      )}
+
+      {freezePicker && (
+        <div className="fixed inset-0 z-40 flex items-end bg-stage/80" role="dialog" aria-modal="true" aria-labelledby="mfreeze-title">
+          <Panel className="mx-auto mb-4 flex w-[calc(100%-1.5rem)] max-w-md flex-col gap-2">
+            <h2 id="mfreeze-title" className="font-display text-xl font-bold">
+              Freeze whose voting screen for 5s?
+            </h2>
+            <div className="grid max-h-[50dvh] grid-cols-2 gap-2 overflow-y-auto">
+              {my.freezeTargets.map((t) => (
+                <Button
+                  key={t.id}
+                  variant="primary"
+                  onClick={async () => {
+                    setFreezePicker(false);
+                    await act({ action: "powerup", type: "freeze", targetId: t.id });
+                  }}
+                >
+                  {t.nickname}
+                </Button>
+              ))}
+            </div>
+            <Button variant="ghost" onClick={() => setFreezePicker(false)} autoFocus>
+              Cancel
+            </Button>
+          </Panel>
+        </div>
+      )}
+    </>
+  );
+}
+
+/** After the reveal: "You read the room!" or the out-of-lives screen. */
+function MltResult({ view, act }: { view: PlayerView; act: (b: Record<string, unknown>) => Promise<unknown> }) {
+  const rv = view.reveal!;
+  const my = view.my;
+  const sd = view.round?.kind === "suddenDeath";
+  const crowned = rv.crowned.map((c) => c.nickname).join(" & ");
+  const result = my?.voteResult ?? null;
+  const summary = (
+    <Panel className="text-center">
+      <p className="text-sm text-mute">{rv.answer}</p>
+      <p className="font-display mt-1 text-2xl font-black text-yellow">
+        {rv.skipped ? "Question skipped — no points" : crowned ? `👑 ${crowned}` : "Nobody voted — no crown"}
+      </p>
+      {!sd && !rv.skipped && my && (
+        <p className="mt-2">
+          <strong className="text-lime">{my.points > 0 ? `+${my.points}` : my.points}</strong> points this round · you&apos;re{" "}
+          <strong className="text-yellow">#{view.me.rank}</strong>
+        </p>
+      )}
+      <p className="mt-2 text-sm text-mute">Waiting for the host to continue…</p>
+    </Panel>
+  );
+  if (sd) {
+    return (
+      <>
+        <Panel className="text-center">
+          <p className="font-display text-3xl font-black">{rv.sdWinnerId === view.me.id ? "🏆 You won the crown!" : "Sudden Death is over!"}</p>
+        </Panel>
+        {summary}
+      </>
+    );
+  }
+  if (result === "correct")
+    return (
+      <>
+        <Celebrate />
+        <Panel className="text-center">
+          <p className="text-6xl" aria-hidden>
+            🎯
+          </p>
+          <p className="font-display text-4xl font-black text-lime" role="status">
+            You read the room!
+          </p>
+        </Panel>
+        {summary}
+        <Panel>
+          <Reactions act={act} />
+        </Panel>
+      </>
+    );
+  if (result === "wrong" || result === "missed")
+    return (
+      <>
+        <Panel className="flex flex-col items-center py-6 text-center">
+          <div className="animate-laugh text-[7rem] leading-none" role="img" aria-label="Laughing emoji">
+            😂
+          </div>
+          <p className="font-display neon-text mt-3 text-5xl font-black text-pink" role="status">
+            {view.content === "pg13" ? "YOU SUCK 😂" : "YOU'RE OUT 😂"}
+          </p>
+          <p className="mt-2 text-mute">{result === "missed" ? "You didn't vote in time." : "Your vote didn't match the crown."}</p>
+        </Panel>
+        {summary}
+        <Panel>
+          <Reactions act={act} />
+        </Panel>
+      </>
+    );
+  return (
+    <>
+      {summary}
+      <Panel>
+        <Reactions act={act} />
+      </Panel>
+    </>
+  );
+}
+
+// ---------------------------------------------------------------------------
 function RevealScreen({ view, act }: { view: PlayerView; act: (b: Record<string, unknown>) => Promise<unknown> }) {
   const rv = view.reveal!;
   const my = view.my;
   const sd = view.round?.kind === "suddenDeath";
   const iWon = sd && rv.sdWinnerId === view.me.id;
+  if (rv.mode === "mlt") return <MltResult view={view} act={act} />;
   return (
     <>
       <Panel className="flex flex-col items-center gap-3 text-center">

@@ -10,6 +10,7 @@ import { siteUrl } from "@/lib/client/storage";
 import { useTicker, type useRoom } from "@/lib/client/useRoom";
 import type { TvView } from "@/lib/game/views";
 import { DareWheel } from "./DareWheel";
+import { MltQuestion, MltReveal } from "./MltStage";
 import { Podium } from "./Podium";
 import { FloatingReactions } from "./FloatingReactions";
 import { useTvSound, MuteButton } from "./sound";
@@ -59,7 +60,13 @@ export function TvLobby({ view }: { view: TvView }) {
         <h2 className="font-display text-[2.6vw] font-black">
           <span className="text-pink">{players.length}</span> {players.length === 1 ? "player" : "players"} ready
         </h2>
-        <p className="font-display text-[1.8vw] font-bold text-cyan">Game mode: {MODE_NAMES[view.mode ?? "hangman"]}</p>
+        <p className="font-display text-[1.8vw] font-bold text-cyan">
+          Game mode: {MODE_NAMES[view.mode ?? "hangman"]}
+          {view.mode === "mixed" && <span className="text-mute"> ({view.mixedModes.map((m) => MODE_NAMES[m].replace(/^\S+ /, "")).join(" ⇄ ")})</span>}
+        </p>
+        {(view.mode === "mlt" || (view.mode === "mixed" && view.mixedModes.includes("mlt"))) && players.length < 3 && (
+          <p className="text-[1.5vw] text-orange">👑 Most Likely To needs at least 3 players.</p>
+        )}
         {view.lobby?.friendWords && (
           <p className="text-[1.5vw] text-mute">🤝 Friend-written words are ON — submit yours on your phone! ({view.lobby.submissions} in)</p>
         )}
@@ -178,13 +185,16 @@ function RoundStage({ view, room }: { view: TvView; room: Room }) {
             ) : (
               `Round ${r.number} of ${view.totalRounds}`
             )}
-            {view.mode === "mixed" && <span className="ml-[0.8vw]">· {r.mode === "emoji" ? "😀 Emoji Decode" : "🔤 Hangman"}</span>}
+            {view.mode === "mixed" && (
+              <span className="ml-[0.8vw]">· {r.mode === "emoji" ? "😀 Emoji Decode" : r.mode === "mlt" ? "👑 Most Likely To" : "🔤 Hangman"}</span>
+            )}
           </p>
         </div>
         {!revealing && <Timer timer={r.timer} serverNow={room.serverNow} size="tv" />}
         <div className="neon-box flex flex-1 flex-col items-center justify-center gap-[2vw] rounded-[2vw] border-4 border-violet bg-panel/70 p-[2vw] text-violet">
           {view.pattern && <Pattern cells={view.pattern} variant="tv" reveal={revealing} />}
           {r.mode === "emoji" && <EmojiClue view={view} revealing={revealing} />}
+          {r.mode === "mlt" && (revealing && view.reveal ? <MltReveal view={view} /> : <MltQuestion view={view} />)}
           {revealing && rv && (
             <div className="animate-pop-in text-center text-ink">
               {rv.skipped && <p className="text-[2vw] font-bold text-orange">Skipped — no points this round</p>}
@@ -207,7 +217,9 @@ function RoundStage({ view, room }: { view: TvView; room: Room }) {
         <h2 className="font-display flex justify-between text-[1.6vw] font-black">
           <span>Leaderboard</span>
           {!revealing && (
-            <span className="text-[1.1vw] font-normal text-mute">{r.mode === "emoji" ? "attempts left" : "balloons · % solved"}</span>
+            <span className="text-[1.1vw] font-normal text-mute">
+              {r.mode === "emoji" ? "attempts left" : r.mode === "mlt" ? "who has voted" : "balloons · % solved"}
+            </span>
           )}
         </h2>
         <div className="min-h-0 flex-1">
@@ -231,7 +243,7 @@ function LoserPickStage({ view, room }: { view: TvView; room: Room }) {
         🎯
       </p>
       <h2 className="font-display text-[4vw] font-black">
-        Loser Picks! <span className="text-pink">{lp.nickname}</span> chooses the next category
+        Loser Picks! <span className="text-pink">{lp.nickname}</span> chooses the next {lp.kind === "pack" ? "question pack" : "category"}
       </h2>
       <div className="flex flex-wrap justify-center gap-[1vw]">
         {lp.options.map((o) => (
@@ -285,6 +297,11 @@ export function TvScreen({ room }: { room: Room }) {
         </div>
       </header>
       {body}
+      {view.hold === "needPlayers" && (
+        <div className="fixed inset-x-0 bottom-0 z-30 bg-orange py-[1vw] text-center text-[2vw] font-black text-stage" role="alert">
+          ⏸ Most Likely To needs at least 3 players — join at {siteUrl().replace(/^https?:\/\//, "")}/join with code {view.code}
+        </div>
+      )}
       <FloatingReactions reactions={view.reactions} serverNow={room.serverNow} />
     </Stage>
   );
