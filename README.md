@@ -3,12 +3,13 @@
 A neon game-show word-guessing party game for ~15 friends (up to 30).
 The **TV** shows a QR code, the puzzle and a live leaderboard. Everyone solves the **same puzzle at the same time on their own phone**. No accounts, no app installs, and a host can spin up a new game any time.
 
-Five game modes, one shared leaderboard:
+Six game modes, one shared leaderboard:
 
 - **🔤 Hangman** (default): guess letters. Each wrong letter pops one of your six neon balloons.
 - **😀 Emoji Decode**: the TV shows an emoji clue like 🦁👑, and you type the answer on your phone. You get 3 attempts.
 - **👑 Most Likely To**: the TV asks "Who is most likely to…?" and everyone secretly votes for a player. You score by reading the room. Needs 3+ players.
 - **🕵️ Who Wrote It?**: everyone anonymously answers a question on their phone, then guesses who wrote each answer shown on the TV. Fool your friends for points. Needs 4+ players.
+- **⚡ Category Blitz**: the TV shows a category and a letter ("Movies starting with S"); type as many answers as you can before time runs out. Answers nobody else thought of score extra.
 - **🔀 Mixed**: rotates through the modes you choose, one per round. By default it alternates Hangman and Emoji Decode, starting with Hangman.
 
 Built with **Next.js 16 (App Router) · TypeScript · Tailwind CSS 4 · Supabase (Postgres + Realtime) · Vercel**.
@@ -39,11 +40,11 @@ Having trouble? Jump to [Troubleshooting](#troubleshooting) or open `/api/health
 | --- | --- | --- |
 | Landing | `/` | Anyone: **Host a new game** or **Join with a code** |
 | Host Prep | `/host/CODE/prep#k=SECRET` | Host picks the **Game Mode** (and which modes Mixed includes) and sets up rounds, timers, categories or question packs, difficulty, content level, friend-written words, Dare Wheel, Inside Jokes, custom questions and custom dares, and reviews friend submissions |
-| Host Controls | `/host/CODE#k=SECRET` | Host's phone: Game Mode (in the lobby and after a game), Start, Next, Pause/Resume, Skip, **Drop Hint** (Emoji Decode), Skip question (Most Likely To, Who Wrote It?), Skip answer / Remove upcoming answer (Who Wrote It?), Remove player, Re-spin dare, End, Play Again. The host doesn't play. |
+| Host Controls | `/host/CODE#k=SECRET` | Host's phone: Game Mode (in the lobby and after a game), Start, Next, Pause/Resume, Skip, **Drop Hint** (Emoji Decode), Skip question (Most Likely To, Who Wrote It?), Skip answer / Remove upcoming answer (Who Wrote It?), Skip prompt and answer review (Category Blitz), Remove player, Re-spin dare, End, Play Again. The host doesn't play. |
 | TV Display | `/tv/CODE` | Laptop on HDMI at 1920×1080: QR lobby, puzzle, leaderboard + rival tracker, reactions, dare wheel, podium & awards, sound with mute, full-screen button |
-| Player Phone | `/play/CODE` | Join with a nickname. Hangman: on-screen keyboard (a physical keyboard works too) and hint. Emoji Decode: large answer box with a **Show clue** button. Most Likely To: a big list of names. Who Wrote It?: a large answer box with a character count, then four big name buttons. All modes: power-ups and reactions. |
+| Player Phone | `/play/CODE` | Join with a nickname. Hangman: on-screen keyboard (a physical keyboard works too) and hint. Emoji Decode: large answer box with a **Show clue** button. Most Likely To: a big list of names. Who Wrote It?: a large answer box with a character count, then four big name buttons. Category Blitz: a large answer box that stays focused, and your list of added answers. All modes: power-ups and reactions. |
 
-Game-night features: Power-ups (Freeze a rival / Reveal a letter / Extra Life, 2 uses per game), Loser Picks, Double-Points Final, Sudden Death, Dare Wheel, Emoji Reactions, End-of-Night Awards (Speed Demon, Most Lives Lost, Hint Addict, Comeback Kid, Master Stumper, Emoji Whisperer, Crowd Favorite, Mind Reader, Mastermind, Undercover Agent, Open Book), optional friend-written words, and a private **Inside Jokes** category.
+Game-night features: Power-ups (Freeze a rival / Reveal a letter / Extra Life, 2 uses per game), Loser Picks, Double-Points Final, Sudden Death, Dare Wheel, Emoji Reactions, End-of-Night Awards (Speed Demon, Most Lives Lost, Hint Addict, Comeback Kid, Master Stumper, Emoji Whisperer, Crowd Favorite, Mind Reader, Mastermind, Undercover Agent, Open Book, Original Thinker, Blitz Machine), optional friend-written words, and a private **Inside Jokes** category.
 
 ---
 
@@ -235,6 +236,21 @@ w("What would be the most unhinged thing a smart fridge could say?", "pg13"), //
 - `npm test` checks the file: 30+ questions per pack, no duplicates, 10–120 characters ending in "?", the content filter, and a list of off-limits topic words.
 - Hosts can also add their own questions on Host Prep (the **Host's Questions** pack). The bank is `server-only` and never ships to browsers.
 
+### Category Blitz prompts: [`src/data/blitz.ts`](src/data/blitz.ts)
+
+One prompt per line, grouped by category (TV Shows, Movies, Music Artists, Food, Memes & Internet Culture, College Life, Places, Animals — the section it's in is its category):
+
+```ts
+p("S", "easy", "The Simpsons | Seinfeld | Saturday Night Live / SNL | ..."),   // Clean (default)
+p("D", "hard", "Daria | Dexter | ...", "pg13"),                                   // only in PG-13 games
+```
+
+- The letter, a difficulty (`easy` / `medium` / `hard`), then the accepted answers separated by `|`. Alternate names for the **same** answer go together, separated by ` / ` (with spaces) — they count as one answer for uniqueness.
+- Every answer must start with the letter once a leading "The/A/An" is dropped ("The Simpsons" is an S answer; "The Office" would be an O answer).
+- Use globally recognizable answers and letters with plenty of them. No video game or sports categories.
+- `npm test` checks the file: 15+ prompts per category, one prompt per letter per category, 30+ answers each, every answer starts with the letter, no duplicates, and Clean prompts pass the Clean filter.
+- Anything players type that isn't listed goes to the host to approve after the round, so the list doesn't have to be complete. The bank is `server-only` and never ships to browsers.
+
 ### Starter dares: [`src/data/dares.ts`](src/data/dares.ts)
 
 Each `d("text", "clean" | "pg13")` entry is one dare. Keep dares **safe, consensual and optional**: no alcohol, nothing physically risky, nothing degrading. Hosts can also add custom dares on the Prep screen.
@@ -264,7 +280,7 @@ Late joiners start with 0 points from the next round. Phones that refresh or rec
 - Pick it at the top of **Host Prep → Game settings**, or with the **Game mode** picker on Host Controls in the lobby.
 - After a game ends you can switch modes, then tap **Play Again**. Settings can be changed in the lobby and on the game-over screen, but not mid-game.
 - The TV lobby and every phone show which mode is on.
-- Rounds, content level, friend-written rounds and the Dare Wheel apply to every mode. The round timer, categories and difficulty apply to the word modes (Hangman, Emoji Decode). The voting timer and question packs apply to Most Likely To. The writing timer, guessing timer, answers per round and its own question packs apply to Who Wrote It?. Host Prep only shows the settings for the modes you picked.
+- Rounds, content level, friend-written rounds and the Dare Wheel apply to every mode. The round timer, categories and difficulty apply to the word modes (Hangman, Emoji Decode). The voting timer and question packs apply to Most Likely To. The writing timer, guessing timer, answers per round and its own question packs apply to Who Wrote It?. The Category Blitz timer and categories apply to Category Blitz. Host Prep only shows the settings for the modes you picked.
 - Host Prep, Host Controls and the TV lobby show an **estimated game length** for the current settings.
 
 | Mode | What happens |
@@ -273,7 +289,8 @@ Late joiners start with 0 points from the next round. Phones that refresh or rec
 | 😀 Emoji Decode | Every round is an emoji clue. |
 | 👑 Most Likely To | Every round is a vote. Needs at least 3 players. |
 | 🕵️ Who Wrote It? | Every round is a question to answer anonymously, then guess the writers. Needs at least 4 players. |
-| 🔀 Mixed | Rotates through the modes ticked under **Include in Mixed** (at least two), one per round, in order: Hangman → Emoji Decode → Most Likely To → Who Wrote It?. Most Likely To rounds are skipped while fewer than 3 players are in, Who Wrote It? rounds while fewer than 4. The default is Hangman + Emoji Decode, the original Mixed. Answers never repeat across Hangman and Emoji Decode. |
+| ⚡ Category Blitz | Every round is a category + letter prompt; add as many answers as you can. |
+| 🔀 Mixed | Rotates through the modes ticked under **Include in Mixed** (at least two), one per round, in order: Hangman → Emoji Decode → Most Likely To → Who Wrote It? → Category Blitz. Most Likely To rounds are skipped while fewer than 3 players are in, Who Wrote It? rounds while fewer than 4. The default is Hangman + Emoji Decode, the original Mixed. Answers never repeat across Hangman and Emoji Decode. |
 
 **An Emoji Decode round:**
 1. The TV shows a big emoji clue, the category, the timer and how many players have answered. The leaderboard beside it shows each player's attempts left and whether they've solved it, but never their guesses.
@@ -392,6 +409,24 @@ Other rules:
 - **Anonymity:** the writer of an answer stays on the server until that answer's reveal. It never appears in client code, Realtime messages, API responses, choice order or the host's screen, and no screen ever shows who guessed whom — only totals. Who has written or guessed isn't shown either (it would hint at the writer); only counts are. Each guess is deleted as soon as the writer is revealed.
 - **Reliability:** the server is the source of truth: one answer per player per round, one guess per player per answer (two with Double Guess), both rate-limited. Refreshing restores the stage, question, answer on screen, timer, your answer status, your choices, power-ups and score.
 
+**A Category Blitz round:**
+1. The TV shows the category and a big letter — e.g. *Movies starting with S* — plus the round timer (30/45/60 s, default 30) and how many answers each player has added. Answer text is never shown during the round, so nobody can copy.
+2. Phones show the category, letter, timer and a large answer box that stays focused: type, press **Enter** (or **Add**), repeat. Each answer appears in your list as **Added** — the phone never says whether it's valid. Up to 20 answers each.
+3. When the timer runs out, the server checks every answer against the prompt's accepted answers.
+4. **Host review:** the host gets up to 20 seconds to approve or reject up to 10 of the most common answers the game didn't recognize (Host Controls shows each with how many players gave it). Anything left unreviewed earns nothing. If there's nothing to review, this step is skipped.
+5. The TV reveals popular answers, answers only one player thought of, each player's valid/unique counts and round points, and the leaderboard, then waits for **Next**. Phones show your valid and unique counts — or, if you scored 0, **YOU SUCK 😂** (PG-13) / **YOU'RE OUT 😂** (Clean).
+
+**Category Blitz details:**
+- **Answer matching** (on the server): case, accents, punctuation, extra spaces and a leading "the/a/an" are ignored; the answer must start with the letter after that; listed alternates count as the same answer. One typo is forgiven for answers of 5–8 characters and two for longer ones; shorter answers must match exactly. Numbers must match ("Shrek 2" is not "Shrek"), and a typo equally close to two different answers (Moise → Mouse or Moose?) counts as neither, so close names are never merged. Repeating your own answer is rejected.
+- **Custom prompts:** add your own category + letter on Host Prep (**Host's Prompts**). Accepted answers are optional; without them the most common answers go straight to your review. Friend-written submissions don't apply to this mode. Prompts never repeat within a game.
+- **Content:** answers are filtered at the game's content level when they're typed, so nothing blocked can reach the TV.
+- **Power-ups** (the same 2 per game): **Freeze** a rival's answer box for 5 s (not in the final 5 seconds), **Get a Suggestion** privately shows you one valid answer (only on your phone), **Extra Time** adds 5 seconds for you only. Skipped prompts refund them.
+- **Loser Picks:** the round's lowest scorer picks the next category from the host's selected categories (if the next round is another mode, that mode's usual pick).
+- **Dare Wheel:** unchanged. **Late joiners** start with 0 points from the next round. **Removed players** stop playing and their answers stop counting toward anyone's uniqueness.
+- **Sudden Death:** games with word-guessing rounds keep their existing tiebreak. In a Category Blitz-only game, the tied players get one prompt: the first valid answer wins, an invalid answer eliminates that player, and if everyone is eliminated another prompt is played.
+- **Awards:** **Original Thinker** (most answers nobody else gave) and **Blitz Machine** (most valid answers). Hidden when nobody qualifies.
+- **Answer protection:** the accepted answers and everyone else's answers live only on the server until the reveal — never in client code, Realtime messages or API responses — and are deleted when the round ends. A suggestion is sent only to the player who used it. Answers are rate-limited, and refreshing restores the prompt, your timer, your answers, power-ups and score.
+
 ### Emoji Decode scoring
 
 | Event | Points |
@@ -428,6 +463,18 @@ Points are added when the round ends, so the leaderboard never hints at who is l
 
 Points are added at each answer's reveal; scores never go below 0 and share the one leaderboard.
 
+### Category Blitz scoring
+
+| Event | Points |
+| --- | --- |
+| Each valid answer | **+10** |
+| Nobody else gave that answer | **+30** more |
+| Invalid answer | **0** (no penalty) |
+| Most per round | **300** (then doubled in the final round) |
+| Answers per player per round | 20 max |
+
+Scores never go below 0 and share the one leaderboard.
+
 ### Answer matching
 
 Answers are checked on the server:
@@ -449,9 +496,10 @@ Phones / TV / Host ──HTTPS──▶ Next.js API routes (Vercel) ──SQL (r
         └──── Supabase Realtime ◀───────┘  "room changed, seq=N" (no game data)
 ```
 
-- **No database migration for Emoji Decode, Most Likely To or Who Wrote It?.** Room state is one JSONB document, so the new fields are just extra keys with defaults. Rooms saved by an older version are upgraded in memory when loaded (`upgradeState`), so existing data is never rewritten or lost. `supabase/migrations/0001_init.sql` is still the only migration, and votes, answers and guesses are deleted with their room by the existing cleanup.
+- **No database migration for Emoji Decode, Most Likely To, Who Wrote It? or Category Blitz.** Room state is one JSONB document, so the new fields are just extra keys with defaults. Rooms saved by an older version are upgraded in memory when loaded (`upgradeState`), so existing data is never rewritten or lost. `supabase/migrations/0001_init.sql` is still the only migration, and votes, answers, guesses and Category Blitz answers are deleted with their room by the existing cleanup.
 - **Votes are secret by construction.** The voter → vote map lives only in server state. Views are built from totals, and the map is wiped as soon as a round is scored. A unit test plays the same round with different voters but identical totals and checks that every screen's data is byte-for-byte identical.
 - **Who Wrote It? authors are secret by construction.** Answers and guesses live only in server state; views carry the answer text and totals, never an author before its reveal. Unit tests swap who wrote the answer on screen (or whom a player guessed) and check that every other screen's data is identical; guesses are wiped at each reveal and unshown answers at the end of the round.
+- **Category Blitz answers are secret until the reveal.** The prompt's accepted answers and every player's answers live only in server state; the TV and host get counts, a player gets only their own list, and a suggestion only reaches the player who used it. Both are dropped when the round ends. Tests scan every screen and API response for accepted answers before the reveal.
 - **The server is the source of truth.** All game state for a room is one JSONB document, changed only inside `SELECT … FOR UPDATE` transactions by a pure, unit-tested engine (`src/lib/game/engine.ts`). That covers rounds, guesses, timers, power-ups and scores.
 - **Timers without a long-running server.** The server stores deadlines. Expiry, Loser Picks timeouts and dare auto-spins are applied lazily on any request, and clients wake up at each deadline, so nothing waits on a background process. Pausing freezes the remaining time on the server.
 - **The answer never leaves the server early.** Clients only receive role-specific *views* (`src/lib/game/views.ts`):
@@ -507,9 +555,10 @@ npm run test:e2e
 
 # load test: 2 concurrent games × 15 players against a running server (Mixed mode by default)
 BASE_URL=http://localhost:3000 DATABASE_URL=postgres://... npm run load-test
-#   GAMES=2 PLAYERS=15 ROUNDS=5 MODE=mixed by default (MODE=hangman|emoji|mlt|wwi|mixed)
-#   MIXED=hangman,emoji,mlt,wwi sets the Mixed rotation; every response is scanned for individual votes
-#   and for Who Wrote It? secrets (an author before its reveal, anyone's guesses, unshown answers)
+#   GAMES=2 PLAYERS=15 ROUNDS=5 MODE=mixed by default (MODE=hangman|emoji|mlt|wwi|blitz|mixed)
+#   MIXED=hangman,emoji,mlt,wwi,blitz sets the Mixed rotation; every response is scanned for individual votes,
+#   Who Wrote It? secrets (an author before its reveal, anyone's guesses, unshown answers) and, mid-round,
+#   Category Blitz accepted answers on the TV and host screens
 #   With DATABASE_URL, some bots peek at the current Emoji answer (test oracle) so correct answers are exercised too
 
 npm run check   # lint + typecheck + tests + production build
@@ -548,6 +597,11 @@ Scripts such as `db:migrate` and `load-test` read `.env.local` themselves, and v
 | **Who Wrote It?:** full Who Wrote It? game and a Mixed game (host, TV, 4 phones) | `tests/e2e/wwi.spec.ts` |
 | **Who Wrote It?:** 15 concurrent players, scores match on server, phones and TV | `MODE=wwi npm run load-test` and `MODE=mixed MIXED=hangman,emoji,mlt,wwi npm run load-test` |
 | **Who Wrote It?:** dev tools / network can't reveal an author or another player's guess before it's shown | unit "identical views" tests, integration + e2e scans of every response, load-test scan |
+| **Category Blitz:** existing modes unchanged | all earlier Hangman, Emoji Decode, Most Likely To, Who Wrote It? and Mixed tests pass unchanged |
+| **Category Blitz:** mode selection, answer matching, starting letters, duplicates, uniqueness, score caps, host review, power-ups, custom prompts, answer protection | `tests/unit/blitz.test.ts`, `blitz-match.test.ts`, `blitz-bank.test.ts` + `tests/integration/blitz-api.test.ts` |
+| **Category Blitz:** full Category Blitz game and a Mixed game (host, TV, 3 phones) | `tests/e2e/blitz.spec.ts` |
+| **Category Blitz:** 15 concurrent players submitting answers quickly, scores match on server, phones and TV | `MODE=blitz npm run load-test` and `MODE=mixed MIXED=hangman,emoji,mlt,wwi,blitz npm run load-test` |
+| **Category Blitz:** dev tools / network can't reveal accepted answers before the reveal | unit + integration scans of every view and response, e2e scan of every TV/host response, load-test scan |
 
 Before game night, confirm:
 

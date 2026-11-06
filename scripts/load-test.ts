@@ -6,7 +6,7 @@
  *   BASE_URL=http://localhost:3000 DATABASE_URL=postgres://... npm run load-test
  *
  * Env: GAMES (2), PLAYERS (15), ROUNDS (5|10|15|20, default 5),
- *      MODE (hangman | emoji | mlt | wwi | mixed, default mixed),
+ *      MODE (hangman | emoji | mlt | wwi | blitz | mixed, default mixed),
  *      MIXED (modes Mixed rotates through, default "hangman,emoji,mlt").
  * With DATABASE_URL set, "skilled" bots peek at the current Emoji Decode answer
  * (a test oracle) so correct, typo'd and wrong answers are all exercised.
@@ -22,8 +22,10 @@ const BASE = (process.env.BASE_URL ?? "http://localhost:3000").replace(/\/$/, ""
 const GAMES = Number(process.env.GAMES ?? 2);
 const PLAYERS = Number(process.env.PLAYERS ?? 15);
 const ROUNDS = Number(process.env.ROUNDS ?? 5);
-const MODE = (process.env.MODE ?? "mixed") as "hangman" | "emoji" | "mlt" | "wwi" | "mixed";
-const MIXED = (process.env.MIXED ?? "hangman,emoji,mlt").split(",").map((m) => m.trim()) as ("hangman" | "emoji" | "mlt" | "wwi")[];
+const MODE = (process.env.MODE ?? "mixed") as "hangman" | "emoji" | "mlt" | "wwi" | "blitz" | "mixed";
+const MIXED = (process.env.MIXED ?? "hangman,emoji,mlt").split(",").map((m) => m.trim()) as ("hangman" | "emoji" | "mlt" | "wwi" | "blitz")[];
+/** Category Blitz: answers added, rounds, and TV/host responses that leaked an answer mid-round. */
+const blitzStats = { answers: 0, rounds: new Set<string>(), reviewed: 0, leaks: 0 };
 const mltStats = { votes: 0, rounds: new Set<string>(), leaks: 0 };
 /** Who Wrote It?: answers written, guesses made, answers shown, and responses that leaked a secret. */
 const wwiStats = { answers: 0, guesses: 0, shown: new Set<string>(), leaks: 0 };
@@ -49,7 +51,25 @@ const pick = <T,>(xs: T[]) => xs[Math.floor(Math.random() * xs.length)];
 
 const stats = { requests: 0, errors5xx: 0, unexpected4xx: 0, rateLimited: 0, lat: [] as number[], byStatus: new Map<number, number>(), limitedBy: new Map<string, number>() };
 // bad_guess: a bot guessing from a view that is a few seconds stale, after the next answer came up.
-const EXPECTED_CONFLICTS = new Set(["bad_guess", "answer_locked", "writing_closed", "not_guessing", "guess_locked", "one_boost", "already_used", "nothing_to_eliminate", "already_double", "vote_locked", "too_late", "already_double", "wrong_mode", "no_more_hints", "wrong_phase", "finished", "frozen", "already_guessed", "not_playing", "sitting_out", "paused", "already_frozen", "bad_target", "no_powerups_left", "already_spun", "not_picker", "not_spinner", "round_running", "nothing_to_reveal", "no_hints", "no_powerups", "max_lives"]);
+const EXPECTED_CONFLICTS = new Set(["duplicate", "max_answers", "time_up", "already_suggested", "already_extended", "no_suggestion", "not_reviewing", "bad_guess", "answer_locked", "writing_closed", "not_guessing", "guess_locked", "one_boost", "already_used", "nothing_to_eliminate", "already_double", "vote_locked", "too_late", "already_double", "wrong_mode", "no_more_hints", "wrong_phase", "finished", "frozen", "already_guessed", "not_playing", "sitting_out", "paused", "already_frozen", "bad_target", "no_powerups_left", "already_spun", "not_picker", "not_spinner", "round_running", "nothing_to_reveal", "no_hints", "no_powerups", "max_lives"]);
+
+const blitzCache = new Map<string, string[][]>();
+/** Test oracle: the current Category Blitz prompt's accepted answers, straight from the DB (never from the API). */
+async function blitzAnswers(code: string, key: string): Promise<string[][]> {
+  const k = `${code}:${key}`;
+  if (!blitzCache.has(k)) {
+    if (!oracleDb) return [];
+    const [row] = await oracleDb`select state->'round'->'blitz'->'answers' as a from rooms where code = ${code}`;
+    blitzCache.set(k, (row?.a as string[][] | null) ?? []);
+  }
+  return blitzCache.get(k)!;
+}
+/** No TV or host response may carry an accepted answer while the round is running. */
+async function checkBlitzLeak(code: string, v: any, text: string) { // eslint-disable-line @typescript-eslint/no-explicit-any
+  if (!v?.round?.blitz || v.reveal || v.phase !== "round") return;
+  const answers = await blitzAnswers(code, `${v.round.number}-${v.round.sdAttempt}`);
+  if (answers.flat().some((a) => text.includes(`"${a}"`))) blitzStats.leaks++;
+}
 
 /** Test oracle: who wrote the answer on screen, straight from the DB (never from the API). */
 async function wwiAuthor(code: string): Promise<string | null> {
@@ -75,6 +95,7 @@ async function req(path: string, opts: { method?: string; body?: unknown; header
   } catch {}
   // Who Wrote It? anonymity: never the answer map, picks or results of others, and no author before its reveal.
   if (/"orders"|"guesses"|"eliminated":\[|"answers":\{|"queue"|"lastResults"|"wwiShownCount"/.test(text)) wwiStats.leaks++;
+  if (/"subs"|"answers":\[\[|"suggestions"|"promptKey"/.test(text)) blitzStats.leaks++;
   const view = body?.view ?? body;
   if (view?.round?.wwi && !view.reveal && view.round.wwi.stage !== "answerReveal" && text.includes('"authorId"')) wwiStats.leaks++;
   stats.lat.push(performance.now() - t0);
@@ -106,7 +127,7 @@ async function runGame(g: number) {
   const code: string = room.code;
   const H = { "x-host-token": room.hostToken };
   await req(`/api/rooms/${code}/host`, {
-    body: { action: "updateSettings", settings: { mode: MODE, mixedModes: MIXED, voteSec: 20, writeSec: 30, guessSec: 10, answersShown: 3, rounds: ROUNDS, timerSec: 45, dareWheel: true, dareEvery: 2, friendWords: true, categories: ["movies", "food", "tv", "mixed"] } },
+    body: { action: "updateSettings", settings: { mode: MODE, mixedModes: MIXED, voteSec: 20, writeSec: 30, guessSec: 10, answersShown: 3, blitzSec: 30, rounds: ROUNDS, timerSec: 45, dareWheel: true, dareEvery: 2, friendWords: true, categories: ["movies", "food", "tv", "mixed"] } },
     headers: H,
   });
   const bots: Bot[] = [];
@@ -128,7 +149,8 @@ async function runGame(g: number) {
   // TV: polls like the real display
   const tv = (async () => {
     while (!over) {
-      await req(`/api/rooms/${code}/state?role=tv`);
+      const { body } = await req(`/api/rooms/${code}/state?role=tv`);
+      await checkBlitzLeak(code, body, JSON.stringify(body));
       await sleep(1000);
     }
   })();
@@ -145,6 +167,37 @@ async function runGame(g: number) {
         continue;
       }
       if (v.phase === "ended") break;
+      if (v.phase === "round" && !v.paused && v.round.mode === "blitz") {
+        // Category Blitz: add answers quickly — some real (a "skilled" bot peeks at the DB oracle), some made up.
+        const mine = v.my?.blitz;
+        const key = `${v.round.number}-${v.round.sdAttempt}`;
+        if (mine && v.round.blitz.stage === "play" && v.my.state === "playing" && mine.answers.length < mine.max && mine.timer.remainingMs > 0) {
+          blitzStats.rounds.add(`${code}:${key}`);
+          if (key !== roundKey) {
+            roundKey = key;
+            if (b.usedPowerups < 2 && Math.random() < 0.25 && v.round.kind !== "suddenDeath") {
+              b.usedPowerups++;
+              const type = pick(["freeze", "reveal", "extraLife"]);
+              await req(`/api/rooms/${code}/play`, { body: { action: "powerup", type, targetId: v.my.freezeTargets[0]?.id }, headers: H });
+            }
+          }
+          const answers = await blitzAnswers(code, key);
+          const L: string = v.round.blitz.letter;
+          const fresh = answers.map((g) => g[0]).filter((a) => !mine.answers.includes(a));
+          // Made up (unrecognized → maybe reviewed). Gentle syllables, so it never spells anything the filter blocks.
+          const syl = () => pick(["ba", "bo", "da", "do", "fi", "fo", "ga", "go", "ki", "lo", "mi", "mo", "nu", "po", "ru", "ta", "vo", "zi"]);
+          let text = `${L}${syl()}${syl()}${syl()}`;
+          if (mine.suggestion && !mine.answers.includes(mine.suggestion)) text = mine.suggestion;
+          else if (fresh.length && Math.random() < b.skill * 0.7) text = Math.random() < 0.5 ? fresh[0] : pick(fresh.slice(0, 12));
+          else if (Math.random() < 0.15) text = "Qqq wrong letter";
+          const { status } = await req(`/api/rooms/${code}/play`, { body: { action: "blitzAnswer", text }, headers: H });
+          if (status === 200) blitzStats.answers++;
+          await sleep(rand(450, 900));
+          continue;
+        }
+        await sleep(rand(600, 1200));
+        continue;
+      }
       if (v.phase === "round" && !v.paused && v.round.mode === "wwi") {
         // Who Wrote It?: write one answer, then guess on every answer that isn't yours.
         const w = v.round.wwi;
@@ -281,6 +334,16 @@ async function runGame(g: number) {
       if (v.phase === "round" && v.round?.mode === "emoji" && v.round.hostHints.length < 2 && Date.now() % 7 === 0) {
         await req(`/api/rooms/${code}/host`, { body: { action: "dropHint" }, headers: H });
       }
+      if (v.phase === "round") await checkBlitzLeak(code, v, JSON.stringify(v));
+      if (v.phase === "round" && v.round?.blitz?.stage === "review" && v.blitzReview?.length) {
+        // Approve about half the unrecognized answers, then show the results.
+        for (const [i, item] of (v.blitzReview as { id: string }[]).entries()) {
+          await req(`/api/rooms/${code}/host`, { body: { action: "reviewAnswer", id: item.id, verdict: i % 2 ? "no" : "ok" }, headers: H });
+          blitzStats.reviewed++;
+        }
+        await sleep(600);
+        await req(`/api/rooms/${code}/host`, { body: { action: "finishReview" }, headers: H });
+      }
       if (v.phase === "round" && v.round?.wwi) {
         const w = v.round.wwi;
         // Once per game: remove an upcoming answer, and skip one on screen.
@@ -342,9 +405,9 @@ async function runGame(g: number) {
   const foreign = tvv.leaderboard.filter((e: { nickname: string }) => !e.nickname.startsWith(`G${g}P`));
   if (foreign.length) problems.push(`game ${code} sees players from another game: ${foreign.map((e: { nickname: string }) => e.nickname)}`);
   let modes = "";
-  if (oracleDb) modes = ((await oracleDb`select state->'history' as h from rooms where code = ${code}`)[0]?.h ?? []).map((h: { mode: string }) => (h.mode === "emoji" ? "E" : h.mode === "mlt" ? "M" : h.mode === "wwi" ? "W" : "H")).join("");
+  if (oracleDb) modes = ((await oracleDb`select state->'history' as h from rooms where code = ${code}`)[0]?.h ?? []).map((h: { mode: string }) => (h.mode === "emoji" ? "E" : h.mode === "mlt" ? "M" : h.mode === "wwi" ? "W" : h.mode === "blitz" ? "B" : "H")).join("");
   if (MODE === "mixed" && oracleDb) {
-    const letter = { hangman: "H", emoji: "E", mlt: "M", wwi: "W" } as const;
+    const letter = { hangman: "H", emoji: "E", mlt: "M", wwi: "W", blitz: "B" } as const;
     const expected = Array.from({ length: modes.length }, (_, i) => letter[MIXED[i % MIXED.length]]).join("");
     if (modes !== expected) problems.push(`mixed rounds should be ${expected} but were ${modes}`);
   }
@@ -368,7 +431,10 @@ async function main() {
   if (wwiStats.answers)
     console.log(`Who Wrote It?: ${wwiStats.answers} answers · ${wwiStats.shown.size} shown · ${wwiStats.guesses} guesses · responses leaking an author or guess: ${wwiStats.leaks}`);
   if (wwiStats.leaks) console.log("  ✗ anonymity: some responses contained a secret author, guesses or unshown answers");
-  let failed = stats.errors5xx > 0 || stats.unexpected4xx > 0 || mltStats.leaks > 0 || wwiStats.leaks > 0;
+  if (blitzStats.answers)
+    console.log(`Category Blitz: ${blitzStats.rounds.size} rounds · ${blitzStats.answers} answers · ${blitzStats.reviewed} reviewed · responses leaking an answer: ${blitzStats.leaks}`);
+  if (blitzStats.leaks) console.log("  ✗ answer protection: some responses contained accepted answers or other players' answers");
+  let failed = stats.errors5xx > 0 || stats.unexpected4xx > 0 || mltStats.leaks > 0 || wwiStats.leaks > 0 || blitzStats.leaks > 0;
   await oracleDb?.end();
   for (const r of results) {
     console.log(`Game ${r.code}: ${r.rounds} rounds${r.modes ? ` (${r.modes})` : ""} · winner ${r.winner?.nickname} (${r.winner?.score}) · ${r.awards} awards · ${r.problems.length ? "PROBLEMS" : "scores match on server, phones, TV and host ✓"}`);
