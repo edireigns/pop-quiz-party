@@ -17,6 +17,7 @@ export async function POST(req: Request, ctx: RouteContext<"/api/rooms/[code]/pl
     // Same for Who Wrote It? answers and guesses (Double Guess needs two quick taps).
     if (body.action === "writeAnswer") memoryLimit(`wwiw:${(token ?? clientIp(req)).slice(0, 24)}`, 3, 3_000);
     if (body.action === "wwiGuess") memoryLimit(`wwig:${(token ?? clientIp(req)).slice(0, 24)}`, 4, 3_000);
+    if (body.action === "blitzAnswer") memoryLimit(`blitz:${(token ?? clientIp(req)).slice(0, 24)}`, 10, 3_000);
     const { state, now, result } = await withRoom(code, (s, c) => {
       const p = playerForToken(s, token);
       const r = playerAction(s, c, p.id, body);
@@ -28,7 +29,9 @@ export async function POST(req: Request, ctx: RouteContext<"/api/rooms/[code]/pl
         ? { correct: r?.correct ?? null }
         : body.action === "answer"
           ? { correct: r?.correct ?? null, attemptsLeft: r?.attemptsLeft ?? null }
-          : body.action === "vote" || body.action === "writeAnswer"
+          : body.action === "blitzAnswer"
+            ? { added: true } // never whether it was valid
+            : body.action === "vote" || body.action === "writeAnswer"
             ? { locked: true } // never echo who the vote was for
             : body.action === "wwiGuess"
               ? { locked: r?.locked ?? true } // never echo who was picked, or whether it was right

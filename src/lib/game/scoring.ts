@@ -105,3 +105,19 @@ export const WWI = {
   /** How long each author reveal stays up before the next answer. */
   answerRevealMs: 6000,
 } as const;
+
+// ---------------------------------------------------------------------------
+// Category Blitz
+// ---------------------------------------------------------------------------
+export const BLITZ = {
+  valid: 10,
+  /** Bonus when no other player gave that answer. */
+  uniqueBonus: 30,
+  /** Per round, before the final-round double. */
+  roundCap: 300,
+  maxAnswers: 20,
+  reviewMs: 20_000,
+  reviewMax: 10,
+  freezeCutoffMs: 5000,
+  extraTimeMs: 5000,
+} as const;

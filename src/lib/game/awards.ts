@@ -31,7 +31,9 @@ export interface Award {
     | "mindReader"
     | "mastermind"
     | "undercoverAgent"
-    | "openBook";
+    | "openBook"
+    | "originalThinker"
+    | "blitzMachine";
   title: string;
   emoji: string;
   playerId: string;
@@ -188,6 +190,28 @@ export function computeAwards(s: GameState): Award[] {
       playerId: book.p.id,
       nickname: book.p.nickname,
       detail: `Recognized ${book.v} time${book.v === 1 ? "" : "s"}`,
+    });
+
+  // Category Blitz. Hidden when nobody qualifies.
+  const original = best(active, rankOf, (p) => ((p.stats.uniqueAnswers ?? 0) > 0 ? p.stats.uniqueAnswers! : null), more);
+  if (original)
+    awards.push({
+      key: "originalThinker",
+      title: "Original Thinker",
+      emoji: "💡",
+      playerId: original.p.id,
+      nickname: original.p.nickname,
+      detail: `${original.v} answer${original.v === 1 ? "" : "s"} nobody else thought of`,
+    });
+  const machine = best(active, rankOf, (p) => ((p.stats.validAnswers ?? 0) > 0 ? p.stats.validAnswers! : null), more);
+  if (machine)
+    awards.push({
+      key: "blitzMachine",
+      title: "Blitz Machine",
+      emoji: "⚡",
+      playerId: machine.p.id,
+      nickname: machine.p.nickname,
+      detail: `${machine.v} valid answer${machine.v === 1 ? "" : "s"}`,
     });
 
   // Use the settings the game was played with, so editing settings on the

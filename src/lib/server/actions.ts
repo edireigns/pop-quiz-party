@@ -2,7 +2,7 @@ import "server-only";
 import * as E from "@/lib/game/engine";
 import { type Ctx, GameError, type GameState, type PowerUp, type Settings } from "@/lib/game/types";
 import { validateDare, validateHint, validatePhrase, validatePrompt, validateQuestion } from "@/lib/moderation";
-import { cleanClue, isEmojiClue } from "@/lib/game/answers";
+import { cleanClue, isEmojiClue, normalizeAnswer } from "@/lib/game/answers";
 
 /** Optional emoji clue: emojis and spaces only. */
 function parseClue(v: unknown, required: boolean): string | undefined {
@@ -29,6 +29,37 @@ function parseAlternates(v: unknown): string[] {
 }
 
 const str = (v: unknown) => (typeof v === "string" ? v : "");
+
+/**
+ * A host-written Category Blitz prompt: a category (2–40 characters), one letter,
+ * and optional accepted answers — comma-separated, alternates joined with "/".
+ */
+function parseBlitzPrompt(body: Record<string, unknown>): { category: string; letter: string; answers: string[][] } {
+  const cat = validatePhrase(body.category, "pg13"); // the game's content level is applied when prompts are used
+  if (!cat.ok) throw new GameError("invalid", `Category: ${cat.error}`);
+  const letter = str(body.letter).trim().toUpperCase();
+  if (!/^[A-Z]$/.test(letter)) throw new GameError("invalid", "Pick one letter, A–Z.");
+  const raw = Array.isArray(body.answers) ? body.answers.join(",") : str(body.answers);
+  const answers: string[][] = [];
+  const seen = new Set<string>();
+  for (const chunk of raw.split(/[,\n]/)) {
+    if (!chunk.trim()) continue;
+    const group: string[] = [];
+    for (const part of chunk.split("/")) {
+      if (!part.trim()) continue;
+      const a = validatePhrase(part, "pg13");
+      if (!a.ok) throw new GameError("invalid", `"${part.trim().slice(0, 40)}": ${a.error}`);
+      const n = normalizeAnswer(a.value);
+      if (!n.startsWith(letter.toLowerCase())) throw new GameError("invalid", `"${a.value}" doesn't start with ${letter}.`);
+      if (seen.has(n)) continue;
+      seen.add(n);
+      group.push(a.value);
+    }
+    if (group.length) answers.push(group);
+  }
+  if (answers.length > 200) throw new GameError("invalid", "Up to 200 accepted answers.");
+  return { category: cat.value, letter, answers };
+}
 
 /** Host actions. Caller must already have verified the host token. */
 export function hostAction(s: GameState, ctx: Ctx, body: Record<string, unknown>) {
@@ -87,6 +118,17 @@ export function hostAction(s: GameState, ctx: Ctx, body: Record<string, unknown>
       return E.removeCustomPrompt(s, str(body.id));
     case "removePromptSub":
       return E.removePromptSub(s, str(body.id));
+    case "addCustomBlitz": {
+      if (s.phase !== "lobby" && s.phase !== "ended") throw new GameError("wrong_phase", "Add prompts before the game starts.", 409);
+      return E.addCustomBlitz(s, parseBlitzPrompt(body), ctx);
+    }
+    case "removeCustomBlitz":
+      if (s.phase !== "lobby" && s.phase !== "ended") throw new GameError("wrong_phase", "Prompts are locked once the game starts.", 409);
+      return E.removeCustomBlitz(s, str(body.id));
+    case "reviewAnswer":
+      return E.reviewBlitzAnswer(s, str(body.id), body.verdict ?? null);
+    case "finishReview":
+      return E.finishBlitzReview(s, ctx);
     case "skipAnswer":
       return E.skipWwiAnswer(s, ctx);
     case "removeAnswer":
@@ -147,6 +189,8 @@ export function playerAction(s: GameState, ctx: Ctx, playerId: string, body: Rec
       if (!q.ok) throw new GameError("invalid", q.error);
       return E.submitPrompt(s, playerId, q.value, ctx);
     }
+    case "blitzAnswer":
+      return E.submitBlitzAnswer(s, playerId, body.text, ctx);
     case "writeAnswer":
       return E.submitWwiAnswer(s, playerId, body.text, ctx);
     case "wwiGuess":

@@ -5,6 +5,8 @@ import { WORD_BANK } from "@/data/words";
 import { CLUE_BANK } from "@/data/clues";
 import { QUESTION_BANK, questionText } from "@/data/questions";
 import { PROMPT_BANK } from "@/data/prompts";
+import { BLITZ_BANK } from "@/data/blitz";
+import { matchBlitzAnswer, startsWithLetter } from "./blitzMatch";
 import { startersFor } from "@/data/dares";
 import { isBlocked, validateWwiAnswer } from "@/lib/moderation";
 import { REACTION_EMOJIS } from "@/data/categories";
@@ -17,6 +19,7 @@ import {
   emojiPoints,
   MLT,
   WWI,
+  BLITZ,
   FREEZE_MS,
   LOSER_PICK_MS,
   MAX_PLAYERS,
@@ -64,6 +67,8 @@ import {
   TIMER_OPTIONS,
   type WordEntry,
   type WwiResult,
+  type BlitzRound,
+  type BlitzPromptEntry,
   type WwiRound,
   type WordSource,
 } from "./types";
@@ -168,6 +173,11 @@ export function includesWwi(s: GameState): boolean {
   return s.settings.mode === "wwi" || (s.settings.mode === "mixed" && mixedList(s).includes("wwi"));
 }
 
+/** True if the game's rounds can include Category Blitz. */
+export function includesBlitz(s: GameState): boolean {
+  return s.settings.mode === "blitz" || (s.settings.mode === "mixed" && mixedList(s).includes("blitz"));
+}
+
 /** Players a round of this mode needs (Most Likely To 3, Who Wrote It? 4). */
 export function minPlayersFor(mode: RoundMode): number {
   return mode === "mlt" ? MLT.minPlayers : mode === "wwi" ? WWI.minPlayers : 1;
@@ -203,10 +213,12 @@ export function roundModeFor(s: GameState, n: number): RoundMode {
 export function suddenDeathMode(s: GameState): RoundMode {
   if (s.settings.mode === "emoji") return "emoji";
   if (s.settings.mode === "mlt" || s.settings.mode === "wwi") return "mlt";
+  if (s.settings.mode === "blitz") return "blitz";
   if (s.settings.mode === "mixed") {
     const list = mixedList(s);
     if (list.includes("hangman")) return "hangman";
     if (list.includes("emoji")) return "emoji";
+    if (list.includes("blitz")) return "blitz";
     return "mlt";
   }
   return "hangman";
@@ -481,6 +493,7 @@ export function removePlayer(s: GameState, playerId: string, ctx: Ctx) {
       }
     }
     if (r.mode === "wwi" && r.wwi) wwiDropPlayer(s, r.wwi, playerId, ctx);
+    if (r.mode === "blitz" && r.blitz) delete r.blitz.subs[playerId]; // their answers no longer affect anyone's uniqueness
     if (s.suddenDeath) s.suddenDeath.playerIds = s.suddenDeath.playerIds.filter((id) => id !== playerId);
     checkRoundComplete(s, ctx);
   } else if (s.suddenDeath) {
@@ -747,6 +760,7 @@ export function availablePacks(s: GameState): PackId[] {
 
 /** Loser Picks options for a round of this mode. */
 export function availableChoices(s: GameState, mode: RoundMode): (CategoryId | PackId | WwiPackId | BlitzCategoryId)[] {
+  if (mode === "blitz") return availableBlitzCategories(s);
   return mode === "mlt" ? availablePacks(s) : mode === "wwi" ? availableWwiPacks(s) : availableCategories(s, mode);
 }
 
@@ -769,6 +783,7 @@ function friendQuestionAvailable(s: GameState, roundNumber: number) {
 
 function friendWordAvailable(s: GameState, roundNumber: number, mode: RoundMode = roundModeFor(s, roundNumber)) {
   if (mode === "mlt" || mode === "wwi") return null; // question modes use friend-written questions instead
+  if (mode === "blitz") return null; // friend-written submissions don't apply to Category Blitz
   if (!s.settings.friendWords || !s.friendRoundPlan.includes(roundNumber)) return null;
   if (activePlayers(s).length < 2) return null;
   const pending = s.submissions.filter(
@@ -855,6 +870,7 @@ export function startRound(s: GameState, ctx: Ctx, choice?: CategoryId | PackId 
   const active = activePlayers(s);
   if (mode === "mlt") return startMltRound(s, ctx, n, kind, (choice as PackId | null | undefined) ?? (s.nextCategory as PackId | null));
   if (mode === "wwi") return startWwiRound(s, ctx, n, kind, (choice as WwiPackId | null | undefined) ?? (s.nextCategory as WwiPackId | null));
+  if (mode === "blitz") return startBlitzRound(s, ctx, n, kind, (choice as BlitzCategoryId | null | undefined) ?? (s.nextCategory as BlitzCategoryId | null));
   const category = choice as CategoryId | null | undefined;
 
   let answer: string, hint: string, cat: CategoryId | "friend", source: WordSource;
@@ -1024,6 +1040,7 @@ function startSuddenDeath(s: GameState, ctx: Ctx) {
   }
   const mode = suddenDeathMode(s);
   if (mode === "mlt") return startMltSuddenDeath(s, ctx);
+  if (mode === "blitz") return startBlitzSuddenDeath(s, ctx);
   const available = availableCategories(s, mode).filter((c) => c !== "inside");
   const cat = available.length ? pick(available, ctx.random) : pick(BUILTIN_CATEGORIES, ctx.random);
   const w =
@@ -1206,6 +1223,8 @@ export function activatePowerup(s: GameState, playerId: string, type: PowerUp, t
 
   if (r.mode === "mlt") {
     mltPowerup(s, r, pr, playerId, type, targetId, ctx);
+  } else if (r.mode === "blitz") {
+    blitzPowerup(s, r, playerId, type, targetId, ctx);
   } else if (r.mode === "wwi") {
     wwiPowerup(s, r, playerId, type, targetId, ctx);
   } else if (type === "freeze") {
@@ -1378,6 +1397,7 @@ export function checkRoundComplete(s: GameState, ctx: Ctx) {
   if (s.phase !== "round" || !s.round) return;
   const r = s.round;
   if (r.mode === "wwi") return wwiCheckStage(s, ctx);
+  if (r.mode === "blitz") return blitzCheck(s, ctx);
   const stillPlaying = r.participants.some((id) => r.progress[id]?.status === "playing");
   if (!stillPlaying) endRound(s, ctx, "allDone");
 }
@@ -1399,6 +1419,7 @@ export function endRound(s: GameState, ctx: Ctx, reason: NonNullable<Round["endR
       return;
     }
   } else if (reason === "skipped") {
+    if (r.mode === "blitz" && r.blitz) wipeBlitz(r.blitz);
     for (const id of r.participants) {
       const pr = r.progress[id];
       const p = s.players.find((x) => x.id === id);
@@ -1420,8 +1441,12 @@ export function endRound(s: GameState, ctx: Ctx, reason: NonNullable<Round["endR
   }
 
   if (r.mode === "mlt") scoreVotes(s, r, ctx);
+  if (r.mode === "blitz" && r.blitz) {
+    if (r.kind !== "suddenDeath") scoreBlitz(s, r, r.blitz);
+    wipeBlitz(r.blitz);
+  }
 
-  if (r.kind !== "suddenDeath" && r.mode !== "mlt" && r.mode !== "wwi") {
+  if (r.kind !== "suddenDeath" && r.mode !== "mlt" && r.mode !== "wwi" && r.mode !== "blitz") {
     const failed = r.participants.filter((id) => r.progress[id] && r.progress[id].status !== "solved").length;
     r.stumpedCount = failed;
     if (r.source === "friend" && r.authorId && !getRemoved(s, r.authorId)) {
@@ -1454,7 +1479,14 @@ export function endRound(s: GameState, ctx: Ctx, reason: NonNullable<Round["endR
       const pr = r.progress[p.id];
       results[p.id] = {
         points: pr ? pr.points : p.id === r.authorId ? r.authorBonus : 0,
-        solved: r.mode === "mlt" ? pr?.voteResult === "correct" : r.mode === "wwi" ? (pr?.wwiCorrect ?? 0) > 0 : pr?.status === "solved",
+        solved:
+          r.mode === "mlt"
+            ? pr?.voteResult === "correct"
+            : r.mode === "wwi"
+              ? (pr?.wwiCorrect ?? 0) > 0
+              : r.mode === "blitz"
+                ? (r.blitz?.results?.players[p.id]?.valid ?? 0) > 0
+                : pr?.status === "solved",
         solveMs: pr?.solveMs ?? null,
         wrong: pr?.wrong.length ?? 0,
         hint: pr?.hintUsed ?? false,
@@ -1466,7 +1498,7 @@ export function endRound(s: GameState, ctx: Ctx, reason: NonNullable<Round["endR
       mode: r.mode,
       number: r.number,
       kind: r.kind,
-      answer: r.mode === "mlt" || r.mode === "wwi" ? (r.question ?? "") : r.answer,
+      answer: r.mode === "mlt" || r.mode === "wwi" || r.mode === "blitz" ? (r.question ?? "") : r.answer,
       category: r.category,
       source: r.source,
       authorId: r.authorId,
@@ -1511,6 +1543,7 @@ export function tick(s: GameState, ctx: Ctx): boolean {
   const before = s.seq;
   if (s.phase === "round" && s.round && !s.paused && ctx.now >= s.round.deadline) {
     if (s.round.mode === "wwi" && s.round.wwi) wwiAdvance(s, ctx);
+    else if (s.round.mode === "blitz" && s.round.blitz && s.round.kind !== "suddenDeath") blitzAdvance(s, ctx);
     else endRound(s, ctx, "timer");
   } else if (s.phase === "loserPick" && s.loserPick && ctx.now >= s.loserPick.deadline) {
     resolveLoserPick(s, null, ctx);
@@ -1529,6 +1562,7 @@ export function next(s: GameState, ctx: Ctx) {
       // Who Wrote It?: Next moves on from the review pause or an author reveal right away.
       const w = s.round?.mode === "wwi" ? s.round.wwi : undefined;
       if (w && !s.paused && (w.stage === "review" || w.stage === "answerReveal")) return wwiNextAnswer(s, ctx);
+      if (s.round?.mode === "blitz" && s.round.blitz?.stage === "review") return finishBlitzReview(s, ctx);
       throw new GameError("round_running", "The round is still running. Use Skip to end it early.", 409);
     }
     case "loserPick":
@@ -2072,6 +2106,359 @@ export function removeWwiAnswer(s: GameState, answerId: string, ctx: Ctx) {
   if (authorId) delete w.answers[authorId];
   wwiRecount(s, w);
   bump(s);
+}
+
+// ---------------------------------------------------------------------------
+// Category Blitz
+//
+// The TV shows a category and a letter; players add as many answers as they
+// can. SECRET until the reveal: the accepted answers and everyone's answers
+// (other than your own). After the timer the host reviews the most common
+// unrecognized answers, then every answer is scored and the secrets dropped.
+// ---------------------------------------------------------------------------
+interface BlitzPick {
+  key: string;
+  category: BlitzCategoryId;
+  label: string;
+  letter: string;
+  answers: string[][];
+}
+
+const BLITZ_CATEGORY_NAMES: Record<BuiltInBlitzCategoryId, string> = {
+  tv: "TV Shows",
+  movies: "Movies",
+  music: "Music Artists",
+  food: "Food",
+  memes: "Memes & Internet Culture",
+  college: "College Life",
+  places: "Places",
+  animals: "Animals",
+};
+
+/** Host-written prompt ("Things in a fridge" + "B"); accepted answers are optional. */
+export function addCustomBlitz(s: GameState, prompt: { category: string; letter: string; answers: string[][] }, ctx: Ctx) {
+  if (s.customBlitz.length >= 100) throw new GameError("too_many", "Custom prompts are full (100 max).");
+  const key = (c: string, l: string) => `${normalizeAnswer(c)}:${l}`;
+  if (s.customBlitz.some((q) => key(q.category, q.letter) === key(prompt.category, prompt.letter)))
+    throw new GameError("duplicate", "That prompt is already on the list.");
+  s.customBlitz.push({ id: ctx.id(), ...prompt });
+  if (!s.settings.blitzCategories.includes("hostPrompts")) s.settings.blitzCategories = [...s.settings.blitzCategories, "hostPrompts"];
+  bump(s);
+}
+
+export function removeCustomBlitz(s: GameState, id: string) {
+  s.customBlitz = s.customBlitz.filter((q) => q.id !== id);
+  if (s.customBlitz.length === 0 && s.settings.blitzCategories.includes("hostPrompts")) {
+    const cats = s.settings.blitzCategories.filter((c) => c !== "hostPrompts");
+    s.settings.blitzCategories = cats.length ? cats : [...BUILTIN_BLITZ_CATEGORIES];
+  }
+  bump(s);
+}
+
+function blitzPool(s: GameState, cat: BlitzCategoryId, strictDifficulty = false): BlitzPick[] {
+  const used = new Set(s.usedBlitz);
+  if (cat === "hostPrompts")
+    return s.customBlitz
+      .filter((q) => !used.has(`c:${q.id}`) && !isBlocked(q.category, s.settings.content))
+      .map((q) => ({ key: `c:${q.id}`, category: "hostPrompts", label: q.category, letter: q.letter, answers: q.answers }));
+  return (BLITZ_BANK[cat] ?? [])
+    .filter(
+      (e: BlitzPromptEntry) =>
+        (s.settings.content === "pg13" || e.content === "clean") &&
+        (!strictDifficulty || s.settings.difficulty === "mixed" || e.difficulty === s.settings.difficulty) &&
+        !used.has(`${cat}:${e.letter}`),
+    )
+    .map((e) => ({ key: `${cat}:${e.letter}`, category: cat, label: BLITZ_CATEGORY_NAMES[cat], letter: e.letter, answers: e.answers }));
+}
+
+/** Category Blitz categories that still have unused prompts. */
+export function availableBlitzCategories(s: GameState): BlitzCategoryId[] {
+  return (s.settings.blitzCategories ?? BUILTIN_BLITZ_CATEGORIES).filter((c) => blitzPool(s, c).length > 0);
+}
+
+export function chooseBlitzPrompt(s: GameState, cat: BlitzCategoryId, ctx: Ctx, builtInOnly = false): BlitzPick {
+  if (!(builtInOnly && cat === "hostPrompts")) {
+    let pool = blitzPool(s, cat, true);
+    if (!pool.length) pool = blitzPool(s, cat);
+    if (pool.length) return pick(pool, ctx.random);
+  }
+  const others = availableBlitzCategories(s).filter((c) => c !== cat && !(builtInOnly && c === "hostPrompts"));
+  if (others.length) return chooseBlitzPrompt(s, pick(others, ctx.random), ctx, builtInOnly);
+  const anyBuiltin = BUILTIN_BLITZ_CATEGORIES.filter((c) => blitzPool(s, c).length > 0);
+  if (anyBuiltin.length) return chooseBlitzPrompt(s, pick(anyBuiltin, ctx.random), ctx, builtInOnly);
+  s.usedBlitz = []; // every prompt used (huge game): allow repeats again
+  return chooseBlitzPrompt(s, cat === "hostPrompts" ? "movies" : cat, ctx, builtInOnly);
+}
+
+function newBlitz(p: BlitzPick): BlitzRound {
+  return {
+    stage: "play",
+    categoryLabel: p.label,
+    letter: p.letter,
+    promptKey: p.key,
+    answers: p.answers.map((g) => [...g]),
+    subs: {},
+    extra: {},
+    suggestions: {},
+    review: [],
+    results: null,
+  };
+}
+
+function blitzRoundBase(s: GameState, ctx: Ctx, p: BlitzPick, participants: string[], lives: number) {
+  s.usedBlitz.push(p.key);
+  const durationMs = (s.settings.blitzSec ?? 30) * 1000;
+  const progress: Record<string, PlayerProgress> = {};
+  for (const id of participants) progress[id] = newProgress(lives);
+  return {
+    id: ctx.id(),
+    mode: "blitz" as const,
+    category: p.category,
+    answer: "",
+    hint: "",
+    clue: null,
+    alternates: [],
+    hostHints: [],
+    question: `${p.label} starting with ${p.letter}`,
+    blitz: newBlitz(p),
+    source: (p.category === "hostPrompts" ? "inside" : "builtin") as WordSource,
+    authorId: null,
+    startedAt: ctx.now,
+    durationMs,
+    deadline: ctx.now + durationMs,
+    pausedRemainingMs: null,
+    participants,
+    progress,
+    endedAt: null,
+    endReason: null,
+    authorBonus: 0,
+    stumpedCount: 0,
+    sdWinnerId: null,
+  };
+}
+
+function startBlitzRound(s: GameState, ctx: Ctx, n: number, kind: "normal" | "final", cat: BlitzCategoryId | null) {
+  const available = availableBlitzCategories(s);
+  const want =
+    cat && (s.settings.blitzCategories as string[]).includes(cat)
+      ? cat
+      : available.length
+        ? pick(available, ctx.random)
+        : pick(s.settings.blitzCategories, ctx.random);
+  const p = chooseBlitzPrompt(s, want, ctx);
+  s.roundsPlayed = n;
+  s.round = { ...blitzRoundBase(s, ctx, p, activePlayers(s).map((x) => x.id), 0), number: n, kind, sdAttempt: 0, multiplier: kind === "final" ? 2 : 1 };
+  s.phase = "round";
+  s.paused = false;
+  s.nextCategory = null;
+  s.loserPick = null;
+  s.dare = null;
+  s.hold = null;
+  s.holdMin = null;
+  bump(s);
+}
+
+/** Category Blitz-only tiebreak: one built-in prompt; first valid answer wins, an invalid one is out. */
+function startBlitzSuddenDeath(s: GameState, ctx: Ctx) {
+  const sd = s.suddenDeath!;
+  const cats = s.settings.blitzCategories.filter((c): c is BuiltInBlitzCategoryId => c !== "hostPrompts");
+  const p = chooseBlitzPrompt(s, cats.length ? pick(cats, ctx.random) : pick(BUILTIN_BLITZ_CATEGORIES, ctx.random), ctx, true);
+  s.round = { ...blitzRoundBase(s, ctx, p, [...sd.playerIds], 1), number: s.roundsPlayed, kind: "suddenDeath", sdAttempt: sd.attempt, multiplier: 1 };
+  s.phase = "round";
+  s.paused = false;
+  bump(s);
+}
+
+/** A player's own deadline (Extra Time adds 5 seconds for them only). */
+export function blitzDeadline(r: Round, playerId: string): number {
+  return r.deadline + (r.blitz?.extra[playerId] ?? 0);
+}
+
+function blitzPlayEnd(r: Round): number {
+  return r.deadline + Math.max(0, ...Object.values(r.blitz?.extra ?? {}));
+}
+
+function blitzPlay(s: GameState, playerId: string, ctx: Ctx) {
+  assertPhase(s, "round");
+  const r = s.round!;
+  if (r.mode !== "blitz" || !r.blitz) throw new GameError("wrong_mode", "This isn't a Category Blitz round.", 409);
+  const p = getPlayer(s, playerId);
+  if (s.paused) throw new GameError("paused", "The game is paused.", 409);
+  const pr = r.progress[playerId];
+  if (!pr) throw new GameError("not_playing", "You'll join from the next round.", 409);
+  if (pr.status !== "playing") throw new GameError("finished", "You're done for this round.", 409);
+  if (r.blitz.stage !== "play" || ctx.now >= blitzDeadline(r, playerId)) throw new GameError("time_up", "Time's up!", 409);
+  return { r, b: r.blitz, p, pr };
+}
+
+/** Add one answer. The reply never says whether it's valid. */
+export function submitBlitzAnswer(s: GameState, playerId: string, raw: unknown, ctx: Ctx) {
+  if (typeof raw !== "string") throw new GameError("bad_answer", "Type an answer.");
+  const text = raw.replace(/\s+/g, " ").trim();
+  if (!text || [...text].length > 40) throw new GameError("bad_answer", "Type an answer (up to 40 characters).");
+  if (!/^[\p{L}\p{N}\p{P}\p{Zs}\p{S}\p{M}]*$/u.test(text)) throw new GameError("bad_answer", "That answer has unsupported characters.");
+  const { r, b, p, pr } = blitzPlay(s, playerId, ctx);
+  if (pr.frozenUntil > ctx.now) throw new GameError("frozen", "Your answer box is frozen! ❄️", 409);
+  if (isBlocked(text, s.settings.content)) throw new GameError("not_allowed", "That answer isn't allowed in this game.");
+  const norm = normalizeAnswer(text);
+  if (!norm) throw new GameError("bad_answer", "Type an answer with letters or numbers.");
+  const list = (b.subs[playerId] ??= []);
+  if (list.length >= BLITZ.maxAnswers) throw new GameError("max_answers", `That's ${BLITZ.maxAnswers} answers — the most for one round.`, 409);
+  if (list.some((x) => x.norm === norm)) throw new GameError("duplicate", "You already added that.", 409);
+  p.blitzTimes = rateLimit(p.blitzTimes ?? [], ctx.now, 4000, 8, 150);
+  const idx = matchBlitzAnswer(text, b.letter, b.answers);
+  const key = idx >= 0 ? `a:${idx}` : startsWithLetter(norm, b.letter) ? `u:${norm}` : "x";
+  list.push({ text, norm, key, at: ctx.now });
+  if (r.kind === "suddenDeath") {
+    // First valid answer wins; anything else is out.
+    if (key.startsWith("a:")) {
+      markSolved(s, r, playerId, pr, ctx);
+      return { added: true, count: list.length };
+    }
+    pr.status = "out";
+  }
+  bump(s);
+  checkRoundComplete(s, ctx);
+  return { added: true, count: list.length };
+}
+
+function blitzCheck(s: GameState, ctx: Ctx) {
+  const r = s.round!;
+  const b = r.blitz;
+  if (!b) return;
+  const inRound = r.participants.filter((id) => r.progress[id] && !getRemoved(s, id));
+  if (r.kind === "suddenDeath") {
+    if (!inRound.some((id) => r.progress[id].status === "playing")) endRound(s, ctx, "allDone");
+    return;
+  }
+  // Everyone has hit the answer limit: no need to wait for the timer.
+  if (b.stage === "play" && inRound.length && inRound.every((id) => (b.subs[id]?.length ?? 0) >= BLITZ.maxAnswers)) blitzClose(s, ctx);
+}
+
+function blitzAdvance(s: GameState, ctx: Ctx) {
+  const r = s.round!;
+  const b = r.blitz!;
+  if (b.stage === "play") {
+    if (ctx.now >= blitzPlayEnd(r)) blitzClose(s, ctx);
+  } else {
+    finishBlitzReview(s, ctx);
+  }
+}
+
+/** Time's up: send the most common unrecognized answers to the host, or score right away. */
+function blitzClose(s: GameState, ctx: Ctx) {
+  const r = s.round!;
+  const b = r.blitz!;
+  const groups = new Map<string, { key: string; text: string; players: Set<string>; first: number }>();
+  for (const id of r.participants) {
+    if (getRemoved(s, id)) continue;
+    for (const sub of b.subs[id] ?? []) {
+      if (!sub.key.startsWith("u:")) continue;
+      const g = groups.get(sub.key) ?? { key: sub.key, text: sub.text, players: new Set<string>(), first: sub.at };
+      g.players.add(id);
+      g.first = Math.min(g.first, sub.at);
+      groups.set(sub.key, g);
+    }
+  }
+  const top = [...groups.values()].sort((a, b) => b.players.size - a.players.size || a.first - b.first || a.key.localeCompare(b.key)).slice(0, BLITZ.reviewMax);
+  if (!top.length) {
+    endRound(s, ctx, "timer");
+    return;
+  }
+  b.review = top.map((g) => ({ id: ctx.id(), key: g.key, text: g.text, count: g.players.size, verdict: null }));
+  b.stage = "review";
+  r.durationMs = BLITZ.reviewMs;
+  r.deadline = ctx.now + BLITZ.reviewMs;
+  r.pausedRemainingMs = s.paused ? BLITZ.reviewMs : null;
+  bump(s);
+}
+
+/** Host: approve or reject an unrecognized answer (null = undecided). */
+export function reviewBlitzAnswer(s: GameState, id: string, verdict: unknown) {
+  assertPhase(s, "round");
+  const b = s.round!.blitz;
+  if (!b || b.stage !== "review") throw new GameError("not_reviewing", "There's nothing to review right now.", 409);
+  const item = b.review.find((x) => x.id === id);
+  if (!item) throw new GameError("not_found", "Answer not found.", 404);
+  if (verdict !== "ok" && verdict !== "no" && verdict !== null) throw new GameError("bad_verdict", "Approve or reject.");
+  item.verdict = verdict;
+  bump(s);
+}
+
+/** Host taps Done (or the 20 seconds run out): anything left unreviewed earns nothing. */
+export function finishBlitzReview(s: GameState, ctx: Ctx) {
+  assertPhase(s, "round");
+  const b = s.round!.blitz;
+  if (!b || b.stage !== "review") throw new GameError("not_reviewing", "There's nothing to review right now.", 409);
+  endRound(s, ctx, "timer");
+}
+
+/** +10 per valid answer, +30 more if nobody else gave it, capped at 300 (then doubled in the final). */
+function scoreBlitz(s: GameState, r: Round, b: BlitzRound) {
+  const approved = new Set(b.review.filter((x) => x.verdict === "ok").map((x) => x.key));
+  const players = r.participants.filter((id) => r.progress[id] && !getRemoved(s, id));
+  const valid: Record<string, Set<string>> = {};
+  const count = new Map<string, number>();
+  for (const id of players) {
+    valid[id] = new Set((b.subs[id] ?? []).map((x) => x.key).filter((k) => k.startsWith("a:") || approved.has(k)));
+    for (const k of valid[id]) count.set(k, (count.get(k) ?? 0) + 1);
+  }
+  const textOf = (k: string) => (k.startsWith("a:") ? b.answers[Number(k.slice(2))]?.[0] : b.review.find((x) => x.key === k)?.text) ?? "";
+  const results: NonNullable<BlitzRound["results"]> = { players: {}, popular: [], uniques: [] };
+  for (const id of players) {
+    const keys = [...valid[id]];
+    const unique = keys.filter((k) => count.get(k) === 1).length;
+    const base = Math.min(BLITZ.roundCap, keys.length * BLITZ.valid + unique * BLITZ.uniqueBonus);
+    const pr = r.progress[id];
+    const applied = addScore(s, id, base * r.multiplier, pr);
+    results.players[id] = { valid: keys.length, unique, points: applied };
+    const pl = s.players.find((x) => x.id === id)!;
+    pl.stats.validAnswers = (pl.stats.validAnswers ?? 0) + keys.length;
+    pl.stats.uniqueAnswers = (pl.stats.uniqueAnswers ?? 0) + unique;
+    for (const k of keys) if (count.get(k) === 1) results.uniques.push({ text: textOf(k), playerId: id });
+  }
+  const shown = (t: string) => !!t && !isBlocked(t, s.settings.content);
+  results.popular = [...count.entries()]
+    .filter(([k, n]) => n >= 2 && shown(textOf(k)))
+    .sort((a, b) => b[1] - a[1] || textOf(a[0]).localeCompare(textOf(b[0])))
+    .slice(0, 6)
+    .map(([k, n]) => ({ text: textOf(k), count: n }));
+  results.uniques = results.uniques.filter((u) => shown(u.text)).slice(0, 8);
+  b.results = results;
+}
+
+/** Drop the secrets: accepted answers, everyone's answers, private suggestions, review texts. */
+function wipeBlitz(b: BlitzRound) {
+  b.answers = [];
+  b.subs = {};
+  b.suggestions = {};
+  b.review = [];
+}
+
+/** Category Blitz power-ups: Freeze a rival's answer box, Get a Suggestion, Extra Time. */
+function blitzPowerup(s: GameState, r: Round, playerId: string, type: PowerUp, targetId: string | null, ctx: Ctx) {
+  const b = r.blitz!;
+  if (b.stage !== "play" || ctx.now >= blitzDeadline(r, playerId)) throw new GameError("time_up", "Time's up!", 409);
+  if (type === "freeze") {
+    if (!targetId || targetId === playerId) throw new GameError("bad_target", "Pick a rival to freeze.");
+    const tp = r.progress[targetId];
+    if (!tp || getRemoved(s, targetId) || tp.status !== "playing") throw new GameError("bad_target", "That player isn't answering right now.", 409);
+    if (tp.frozenOnce) throw new GameError("already_frozen", "That player was already frozen this round.", 409);
+    if (remainingMs(r, ctx.now) <= BLITZ.freezeCutoffMs) throw new GameError("too_late", "Too late — no freezes in the final 5 seconds.", 409);
+    tp.frozenOnce = true;
+    tp.frozenUntil = ctx.now + FREEZE_MS;
+  } else if (type === "reveal") {
+    if (b.suggestions[playerId]) throw new GameError("already_suggested", "You already have a suggestion.", 409);
+    const mine = new Set((b.subs[playerId] ?? []).map((x) => x.key));
+    const options = b.answers.map((g, i) => ({ g, i })).filter(({ i }) => !mine.has(`a:${i}`));
+    if (!options.length) throw new GameError("no_suggestion", "No suggestions for this prompt.", 409);
+    b.suggestions[playerId] = pick(options, ctx.random).g[0]; // private to this player
+  } else if (type === "extraLife") {
+    if (b.extra[playerId]) throw new GameError("already_extended", "You already added extra time this round.", 409);
+    b.extra[playerId] = BLITZ.extraTimeMs;
+  } else {
+    throw new GameError("bad_powerup", "Unknown power-up.");
+  }
 }
 
 // ---------------------------------------------------------------------------

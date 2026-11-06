@@ -3,8 +3,8 @@
 // ended (round.endedAt != null). Unit tests enforce this.
 import { emojiFor, labelFor } from "@/data/categories";
 import { computeAwards, standings, type Award, type Standing } from "./awards";
-import { knownLetters, remainingMs } from "./engine";
-import { EMOJI, MLT, STARTING_LIVES, WWI } from "./scoring";
+import { blitzDeadline, knownLetters, remainingMs } from "./engine";
+import { BLITZ, EMOJI, MLT, STARTING_LIVES, WWI } from "./scoring";
 import { estimateMinutes } from "./estimate";
 import { answerLetters } from "./answers";
 import { maskAnswer, solvedFraction, type MaskCell } from "./text";
@@ -28,6 +28,8 @@ export interface RivalEntry {
   pct: number;
   status: "playing" | "solved" | "out" | "waiting" | "voted";
   frozen: boolean;
+  /** Category Blitz: how many answers this player has added (never the answers). */
+  count?: number;
 }
 
 export interface RevealView {
@@ -54,6 +56,23 @@ export interface RevealView {
   sdWinnerId: string | null;
   /** Who Wrote It?: the answers revealed this round (never the ones that weren't shown). */
   wwi: { answers: WwiRevealedView[]; noAnswers: boolean } | null;
+  /** Category Blitz: a selection of popular and unique valid answers, and each player's round. */
+  blitz: {
+    popular: { text: string; count: number }[];
+    uniques: { text: string; nickname: string }[];
+    players: { id: string; nickname: string; valid: number; unique: number; points: number }[];
+  } | null;
+}
+
+/** Category Blitz round state shared by every screen: the prompt, never any answer text. */
+export interface BlitzPublicView {
+  stage: "play" | "review";
+  category: string;
+  letter: string;
+  /** Review: how many answers the host is checking, and how many are decided. */
+  review: { total: number; decided: number } | null;
+  /** The main timer is over but someone is using Extra Time. */
+  extraTime: boolean;
 }
 
 export interface WwiRevealedView {
@@ -149,6 +168,7 @@ interface BaseView {
     question: string | null;
     candidates: { id: string; nickname: string }[];
     wwi: WwiPublicView | null;
+    blitz: BlitzPublicView | null;
     number: number;
     kind: Round["kind"];
     sdAttempt: number;
@@ -255,8 +275,21 @@ function base(s: GameState, now: number): BaseView {
               total: r.participants.filter((id) => r.progress[id]).length,
             };
           })(),
-          question: r.mode === "mlt" || r.mode === "wwi" ? (r.question ?? null) : null,
+          question: r.mode === "mlt" || r.mode === "wwi" || r.mode === "blitz" ? (r.question ?? null) : null,
           wwi: wwiPublic(s, r),
+          blitz:
+            r.mode === "blitz" && r.blitz
+              ? {
+                  stage: r.blitz.stage,
+                  category: r.blitz.categoryLabel,
+                  letter: r.blitz.letter,
+                  review:
+                    r.blitz.stage === "review" && !ended
+                      ? { total: r.blitz.review.length, decided: r.blitz.review.filter((x) => x.verdict).length }
+                      : null,
+                  extraTime: !ended && r.blitz.stage === "play" && !s.paused && now >= r.deadline,
+                }
+              : null,
           candidates:
             r.mode === "mlt"
               ? (r.candidates ?? []).filter((id) => s.players.some((p) => p.id === id && !p.removed)).map((id) => ({ id, nickname: nameOf(s, id)! }))
@@ -280,7 +313,7 @@ function base(s: GameState, now: number): BaseView {
       showRound && ended
         ? {
             mode: r.mode,
-            answer: r.mode === "mlt" || r.mode === "wwi" ? (r.question ?? "") : r.answer,
+            answer: r.mode === "mlt" || r.mode === "wwi" || r.mode === "blitz" ? (r.question ?? "") : r.answer,
             ...revealStats(s, r),
             totals:
               r.mode === "mlt" && r.totals
@@ -297,6 +330,16 @@ function base(s: GameState, now: number): BaseView {
             stumpedCount: r.stumpedCount,
             sdWinnerId: r.sdWinnerId,
             wwi: r.mode === "wwi" && r.wwi ? { answers: r.wwi.revealed.map((x) => revealedView(s, x)), noAnswers: r.wwi.noAnswers } : null,
+            blitz:
+              r.mode === "blitz" && r.blitz?.results
+                ? {
+                    popular: r.blitz.results.popular,
+                    uniques: r.blitz.results.uniques.map((u) => ({ text: u.text, nickname: nameOf(s, u.playerId)! })),
+                    players: Object.entries(r.blitz.results.players)
+                      .map(([id, x]) => ({ id, nickname: nameOf(s, id)!, ...x }))
+                      .sort((a, b) => b.points - a.points || a.nickname.localeCompare(b.nickname)),
+                  }
+                : null,
           }
         : null,
     loserPick:
@@ -361,6 +404,18 @@ export function rivalsFor(s: GameState, now: number, disguiseAuthor: boolean): R
           return { id: p.id, nickname: p.nickname, lives: r.mode === "emoji" ? EMOJI.attempts : STARTING_LIVES, pct: 0, status: "playing", frozen: false };
         return { id: p.id, nickname: p.nickname, lives: 0, pct: 0, status: "waiting", frozen: false };
       }
+      if (r.mode === "blitz") {
+        // How many answers each player has added — never what they are.
+        return {
+          id: p.id,
+          nickname: p.nickname,
+          lives: 0,
+          pct: 0,
+          status: pr.status,
+          frozen: pr.frozenUntil > now && !r.endedAt,
+          count: r.endedAt ? (r.blitz?.results?.players[p.id]?.valid ?? 0) : (r.blitz?.subs[p.id]?.length ?? 0),
+        };
+      }
       if (r.mode === "wwi") {
         // Never per-player writing/guessing status: it would hint at who wrote the answer on screen.
         return { id: p.id, nickname: p.nickname, lives: 0, pct: 0, status: "playing", frozen: pr.frozenUntil > now && !r.endedAt };
@@ -398,7 +453,7 @@ export function tvView(s: GameState, now: number): TvView {
             estimateMin: estimateMinutes(s.settings),
           }
         : null,
-    pattern: r && s.phase !== "lobby" && r.mode !== "emoji" && r.mode !== "wwi" ? (r.endedAt ? maskAnswer(r.answer, new Set("ABCDEFGHIJKLMNOPQRSTUVWXYZ")) : maskAnswer(r.answer, new Set())) : null,
+    pattern: r && s.phase !== "lobby" && r.mode !== "emoji" && r.mode !== "wwi" && r.mode !== "blitz" ? (r.endedAt ? maskAnswer(r.answer, new Set("ABCDEFGHIJKLMNOPQRSTUVWXYZ")) : maskAnswer(r.answer, new Set())) : null,
     rivals: s.phase === "lobby" ? [] : rivalsFor(s, now, true),
     reactions: s.reactions.map((x) => ({ id: x.id, emoji: x.emoji, nickname: nameOf(s, x.playerId)!, at: x.at })),
     dareEnabled: s.settings.dareWheel,
@@ -439,6 +494,8 @@ export interface PlayerView extends BaseView {
     voteResult: "correct" | "wrong" | "missed" | null;
     /** Who Wrote It?: this player's own view only. */
     wwi: MyWwi | null;
+    /** Category Blitz: this player's own view only. */
+    blitz: MyBlitz | null;
   };
   questionSub: { text: string; status: string } | null;
   /** Who Wrote It? question this player submitted in the lobby. */
@@ -467,7 +524,23 @@ export interface MyWwi {
   fooled: number | null;
 }
 
-const NO_MLT = { doubleVote: false, peek: null, voteReset: false, voteResult: null, wwi: null } as const;
+/**
+ * A player's private Category Blitz state. Their own answers are always shown as
+ * just "Added": nothing here says whether an answer is valid until the reveal.
+ */
+export interface MyBlitz {
+  answers: string[];
+  max: number;
+  /** Get a Suggestion: one valid answer, for this player only. */
+  suggestion: string | null;
+  /** This player's own timer (Extra Time adds 5 seconds for them). */
+  timer: TimerView;
+  extraTime: boolean;
+  /** After the reveal. */
+  result: { valid: number; unique: number; points: number } | null;
+}
+
+const NO_MLT = { doubleVote: false, peek: null, voteReset: false, voteResult: null, wwi: null, blitz: null } as const;
 
 function myWwi(s: GameState, r: Round, playerId: string): MyWwi {
   const w = r.wwi!;
@@ -522,6 +595,40 @@ export function playerView(s: GameState, playerId: string, now: number): PlayerV
       };
     } else if (!pr) {
       my = { state: "waiting", pattern: null, guessed: [], wrong: [], lives: 0, hint: null, hintUsed: false, frozenUntil: 0, points: 0, freezeTargets: [], maxAttempts: 0, revealedLetters: [], ...NO_MLT };
+    } else if (r.mode === "blitz" && r.blitz) {
+      const b = r.blitz;
+      const ended = !!r.endedAt;
+      const deadline = blitzDeadline(r, playerId);
+      const remaining = ended ? 0 : s.paused ? (r.pausedRemainingMs ?? 0) + (b.extra[playerId] ?? 0) : Math.max(0, deadline - now);
+      const playing = !ended && b.stage === "play" && pr.status === "playing";
+      const canFreeze = playing && r.kind !== "suddenDeath" && remainingMs(r, now) > BLITZ.freezeCutoffMs;
+      my = {
+        state: pr.status,
+        pattern: null,
+        guessed: [],
+        wrong: [],
+        lives: 0,
+        hint: null,
+        hintUsed: false,
+        frozenUntil: playing ? pr.frozenUntil : 0,
+        points: pr.points,
+        freezeTargets: canFreeze
+          ? r.participants
+              .filter((id) => id !== playerId && r.progress[id]?.status === "playing" && !r.progress[id].frozenOnce && s.players.some((p) => p.id === id && !p.removed))
+              .map((id) => ({ id, nickname: nameOf(s, id)! }))
+          : [],
+        maxAttempts: 0,
+        revealedLetters: [],
+        ...NO_MLT,
+        blitz: {
+          answers: ended ? [] : (b.subs[playerId] ?? []).map((x) => x.text),
+          max: BLITZ.maxAnswers,
+          suggestion: ended ? null : (b.suggestions[playerId] ?? null),
+          timer: { deadline, remainingMs: b.stage === "play" ? remaining : 0, durationMs: r.durationMs + (b.extra[playerId] ?? 0), paused: s.paused },
+          extraTime: !!b.extra[playerId],
+          result: ended ? (b.results?.players[playerId] ?? null) : null,
+        },
+      };
     } else if (r.mode === "wwi" && r.wwi) {
       const mine = myWwi(s, r, playerId);
       const canFreeze =
@@ -571,6 +678,7 @@ export function playerView(s: GameState, playerId: string, now: number): PlayerV
         voteReset: !!pr.voteReset,
         voteResult: r.endedAt && r.endReason !== "skipped" ? (pr.voteResult ?? null) : null,
         wwi: null,
+        blitz: null,
       };
     } else {
       const emoji = r.mode === "emoji";
@@ -650,6 +758,10 @@ export interface HostView extends BaseView {
    */
   wwiCurrent: { id: string; text: string } | null;
   wwiUpcoming: { id: string; text: string }[];
+  /** Category Blitz: the host's prompts (answers are never listed back), and the answers to review. */
+  customBlitz: { id: string; category: string; letter: string; answerCount: number }[] | null;
+  customBlitzCount: number;
+  blitzReview: { id: string; text: string; count: number; verdict: "ok" | "no" | null }[];
   estimateMin: number;
   customDares: { id: string; text: string }[];
   progress: { playing: number; solved: number; out: number; total: number } | null;
@@ -661,7 +773,7 @@ export function hostView(s: GameState, now: number): HostView {
   const r = s.round;
   const inLobby = s.phase === "lobby";
   let progress: HostView["progress"] = null;
-  if (r && s.phase === "round" && r.mode !== "wwi") {
+  if (r && s.phase === "round" && r.mode !== "wwi" && r.mode !== "blitz") {
     const list = r.participants.map((id) => r.progress[id]).filter(Boolean);
     progress = {
       playing: list.filter((p) => p.status === "playing").length,
@@ -692,6 +804,15 @@ export function hostView(s: GameState, now: number): HostView {
     customPromptCount: s.customPrompts.length,
     promptSubs: inLobby ? s.promptSubs.filter((q) => q.status === "pending").map((q) => ({ id: q.id, text: q.text })) : [],
     ...hostWwi(s),
+    customBlitz:
+      inLobby || s.phase === "ended"
+        ? s.customBlitz.map((q) => ({ id: q.id, category: q.category, letter: q.letter, answerCount: q.answers.length }))
+        : null,
+    customBlitzCount: s.customBlitz.length,
+    blitzReview:
+      s.phase === "round" && r?.blitz?.stage === "review" && !r.endedAt
+        ? r.blitz.review.map((x) => ({ id: x.id, text: x.text, count: x.count, verdict: x.verdict }))
+        : [],
     estimateMin: estimateMinutes(s.settings),
     customDares: s.customDares.map((d) => ({ id: d.id, text: d.text })),
     progress,
