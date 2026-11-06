@@ -14,6 +14,7 @@ export const MODE_LABEL: Record<GameMode, string> = {
   emoji: "😀 Emoji Decode",
   mlt: "👑 Most Likely To",
   wwi: "🕵️ Who Wrote It?",
+  blitz: "⚡ Category Blitz",
   mixed: "🔀 Mixed",
 };
 import { useHost } from "./useHost";

@@ -8,7 +8,7 @@ import { EMOJI, MLT, STARTING_LIVES, WWI } from "./scoring";
 import { estimateMinutes } from "./estimate";
 import { answerLetters } from "./answers";
 import { maskAnswer, solvedFraction, type MaskCell } from "./text";
-import type { CategoryId, GameMode, GameState, PackId, Phase, Round, RoundMode, Settings, WwiPackId, WwiResult, WwiStage } from "./types";
+import type { BlitzCategoryId, CategoryId, GameMode, GameState, PackId, Phase, Round, RoundMode, Settings, WwiPackId, WwiResult, WwiStage } from "./types";
 
 export interface TimerView {
   deadline: number;
@@ -88,7 +88,7 @@ export interface WwiPublicView {
 }
 
 export interface CategoryOption {
-  id: CategoryId | PackId | WwiPackId;
+  id: CategoryId | PackId | WwiPackId | BlitzCategoryId;
   label: string;
   emoji: string;
 }
@@ -165,11 +165,11 @@ interface BaseView {
   final: FinalView | null;
 }
 
-export function categoryLabel(c: CategoryId | PackId | WwiPackId | "friend") {
+export function categoryLabel(c: CategoryId | PackId | WwiPackId | BlitzCategoryId | "friend") {
   return labelFor(c);
 }
 
-export function categoryOption(id: CategoryId | PackId | WwiPackId): CategoryOption {
+export function categoryOption(id: CategoryId | PackId | WwiPackId | BlitzCategoryId): CategoryOption {
   return { id, label: labelFor(id), emoji: emojiFor(id) };
 }
 

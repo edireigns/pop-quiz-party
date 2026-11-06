@@ -576,7 +576,7 @@ function EmojiPlaying({ view, room, act, header }: { view: PlayerView; room: Roo
 // ---------------------------------------------------------------------------
 // Most Likely To
 // ---------------------------------------------------------------------------
-const MODE_SHORT = { hangman: "Hangman", emoji: "Emoji Decode", mlt: "Most Likely To", wwi: "Who Wrote It?" } as const;
+const MODE_SHORT = { hangman: "Hangman", emoji: "Emoji Decode", mlt: "Most Likely To", wwi: "Who Wrote It?", blitz: "Category Blitz" } as const;
 
 function hasWordMode(view: PlayerView) {
   return view.mode === "hangman" || view.mode === "emoji" || (view.mode === "mixed" && view.mixedModes.some((m) => m === "hangman" || m === "emoji"));

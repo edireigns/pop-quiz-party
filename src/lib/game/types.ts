@@ -19,11 +19,11 @@ export type Difficulty = "easy" | "medium" | "hard";
 export type DifficultySetting = Difficulty | "mixed";
 export type ContentLevel = "clean" | "pg13";
 
-export const GAME_MODES = ["hangman", "emoji", "mlt", "wwi", "mixed"] as const;
+export const GAME_MODES = ["hangman", "emoji", "mlt", "wwi", "blitz", "mixed"] as const;
 /** The host's choice for the whole game. */
 export type GameMode = (typeof GAME_MODES)[number];
 /** What a single round plays. "mlt" = Most Likely To, "wwi" = Who Wrote It? */
-export const ROUND_MODES = ["hangman", "emoji", "mlt", "wwi"] as const;
+export const ROUND_MODES = ["hangman", "emoji", "mlt", "wwi", "blitz"] as const;
 export type RoundMode = (typeof ROUND_MODES)[number];
 
 /** Most Likely To question packs ("custom" = the host's own questions). */
@@ -39,6 +39,20 @@ export type BuiltInWwiPackId = Exclude<WwiPackId, "custom">;
 export const WRITE_TIMER_OPTIONS = [30, 45, 60] as const;
 export const GUESS_TIMER_OPTIONS = [10, 15, 20] as const;
 export const ANSWERS_SHOWN_OPTIONS = [1, 3, 5] as const;
+
+/** Category Blitz categories ("hostPrompts" = the host's own prompts). */
+export const BLITZ_CATEGORY_IDS = ["tv", "movies", "music", "food", "memes", "college", "places", "animals", "hostPrompts"] as const;
+export type BlitzCategoryId = (typeof BLITZ_CATEGORY_IDS)[number];
+export type BuiltInBlitzCategoryId = Exclude<BlitzCategoryId, "hostPrompts">;
+export const BLITZ_TIMER_OPTIONS = [30, 45, 60] as const;
+
+/** One Category Blitz prompt: answers are [canonical, ...alternates] groups. */
+export interface BlitzPromptEntry {
+  letter: string;
+  difficulty: Difficulty;
+  content: ContentLevel;
+  answers: string[][];
+}
 
 export const ROUND_OPTIONS = [5, 10, 15, 20] as const;
 export const TIMER_OPTIONS = [45, 60, 90] as const;
@@ -58,6 +72,9 @@ export interface Settings {
   guessSec: (typeof GUESS_TIMER_OPTIONS)[number];
   answersShown: (typeof ANSWERS_SHOWN_OPTIONS)[number];
   wwiPacks: WwiPackId[];
+  /** Category Blitz: round timer and categories. */
+  blitzSec: (typeof BLITZ_TIMER_OPTIONS)[number];
+  blitzCategories: BlitzCategoryId[];
   rounds: (typeof ROUND_OPTIONS)[number];
   timerSec: (typeof TIMER_OPTIONS)[number];
   categories: CategoryId[];
@@ -98,6 +115,9 @@ export interface PlayerStats {
   correctGuesses?: number;
   fooled?: number;
   timesGuessed?: number;
+  /** Category Blitz: valid answers (Blitz Machine) and answers nobody else gave (Original Thinker). */
+  validAnswers?: number;
+  uniqueAnswers?: number;
   /** Correct Emoji Decode answers (Emoji Whisperer award). */
   emojiSolves: number;
   livesLost: number;
@@ -126,6 +146,8 @@ export interface Player {
   voteTimes?: number[];
   /** timestamps (ms) of recent Who Wrote It? answers/guesses, for rate limiting */
   wwiTimes?: number[];
+  /** timestamps (ms) of recent Category Blitz answers, for rate limiting */
+  blitzTimes?: number[];
 }
 
 /** "voted" is used by Most Likely To once a player's vote is locked. */
@@ -170,7 +192,7 @@ export interface Round {
   kind: RoundKind;
   sdAttempt: number; // 0 for normal rounds
   /** Hangman/Emoji: a category. Most Likely To / Who Wrote It?: a question pack. */
-  category: CategoryId | PackId | WwiPackId | "friend";
+  category: CategoryId | PackId | WwiPackId | BlitzCategoryId | "friend";
   answer: string;
   hint: string;
   /** Emoji Decode only: the emoji clue (public) and accepted alternates (SECRET until the round ends). */
@@ -188,6 +210,8 @@ export interface Round {
   crowned?: string[];
   /** Who Wrote It? only. */
   wwi?: WwiRound;
+  /** Category Blitz only. */
+  blitz?: BlitzRound;
   source: WordSource;
   authorId: string | null;
   startedAt: number;
@@ -294,7 +318,7 @@ export interface LoserPickState {
   playerId: string;
   /** Categories for word rounds, question packs for Most Likely To rounds. */
   kind?: "category" | "pack";
-  options: (CategoryId | PackId | WwiPackId)[];
+  options: (CategoryId | PackId | WwiPackId | BlitzCategoryId)[];
   deadline: number;
 }
 
@@ -323,7 +347,7 @@ export interface RoundRecord {
   number: number;
   kind: RoundKind;
   answer: string;
-  category: CategoryId | PackId | WwiPackId | "friend";
+  category: CategoryId | PackId | WwiPackId | BlitzCategoryId | "friend";
   source: WordSource;
   authorId: string | null;
   results: Record<string, RoundRecordEntry>;
@@ -373,7 +397,10 @@ export interface GameState {
   wwiRoundPlan: number[];
   wwiShownCount: Record<string, number>;
   wwiWriters: string[];
-  nextCategory: CategoryId | PackId | WwiPackId | null;
+  /** Category Blitz: the host's own prompts and prompts already used. */
+  customBlitz: CustomBlitzPrompt[];
+  usedBlitz: string[];
+  nextCategory: CategoryId | PackId | WwiPackId | BlitzCategoryId | null;
   loserPick: LoserPickState | null;
   dare: DareState | null;
   lastDareRound: number;
@@ -401,4 +428,60 @@ export class GameError extends Error {
     this.code = code;
     this.status = status;
   }
+}
+
+// ---------------------------------------------------------------------------
+// Category Blitz
+// ---------------------------------------------------------------------------
+export interface CustomBlitzPrompt {
+  id: string;
+  /** Free text, e.g. "Things in a fridge". */
+  category: string;
+  letter: string;
+  /** Optional accepted answers ([canonical, ...alternates]); empty → the host reviews the common answers. */
+  answers: string[][];
+}
+
+/** One submitted answer. `key` is SECRET until the reveal: "a:<n>" accepted answer n, "u:<norm>" unrecognized, "x" invalid. */
+export interface BlitzSub {
+  text: string;
+  norm: string;
+  key: string;
+  at: number;
+}
+
+export interface BlitzReviewItem {
+  id: string;
+  key: string;
+  text: string;
+  count: number;
+  verdict: "ok" | "no" | null;
+}
+
+export interface BlitzPlayerResult {
+  valid: number;
+  unique: number;
+  points: number;
+}
+
+export interface BlitzRound {
+  stage: "play" | "review";
+  categoryLabel: string;
+  letter: string;
+  promptKey: string;
+  /** SECRET: accepted answers. Dropped when the round ends. */
+  answers: string[][];
+  /** SECRET (other players): each player's submitted answers. Dropped when the round ends. */
+  subs: Record<string, BlitzSub[]>;
+  /** Extra Time power-up: extra ms per player. */
+  extra: Record<string, number>;
+  /** Get a Suggestion: private to that player. */
+  suggestions: Record<string, string>;
+  review: BlitzReviewItem[];
+  /** Public after the reveal. */
+  results: {
+    players: Record<string, BlitzPlayerResult>;
+    popular: { text: string; count: number }[];
+    uniques: { text: string; playerId: string }[];
+  } | null;
 }

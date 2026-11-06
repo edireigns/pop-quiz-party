@@ -30,7 +30,7 @@ export const CATEGORY_EMOJI: Record<BuiltInCategoryId | "inside" | "friend", str
 export const REACTION_EMOJIS = ["😂", "🔥", "😱", "👏", "💀", "🎉", "😭", "🤯"] as const;
 
 // Most Likely To question packs.
-import type { PackId, WwiPackId } from "@/lib/game/types";
+import type { BlitzCategoryId, PackId, WwiPackId } from "@/lib/game/types";
 
 export const PACK_LABELS: Record<PackId, string> = {
   college: "College Life",
@@ -68,12 +68,37 @@ export const WWI_PACK_EMOJI: Record<WwiPackId, string> = {
   custom: "✍️",
 };
 
+/** Category Blitz categories (the shared ones keep their word-category names). */
+export const BLITZ_LABELS: Record<BlitzCategoryId, string> = {
+  tv: "TV Shows",
+  movies: "Movies",
+  music: "Music Artists",
+  food: "Food",
+  memes: "Memes & Internet Culture",
+  college: "College Life",
+  places: "Places",
+  animals: "Animals",
+  hostPrompts: "Host's Prompts",
+};
+export const BLITZ_EMOJI: Record<BlitzCategoryId, string> = {
+  tv: "📺",
+  movies: "🎬",
+  music: "🎤",
+  food: "🍕",
+  memes: "📱",
+  college: "🎓",
+  places: "🗺️",
+  animals: "🐾",
+  hostPrompts: "✍️",
+};
+
 /** Label for a word category, a question pack, or "friend". */
 export function labelFor(id: string): string {
   return (
     (CATEGORY_LABELS as Record<string, string>)[id] ??
     (PACK_LABELS as Record<string, string>)[id] ??
     (WWI_PACK_LABELS as Record<string, string>)[id] ??
+    (BLITZ_LABELS as Record<string, string>)[id] ??
     id
   );
 }
@@ -82,6 +107,7 @@ export function emojiFor(id: string): string {
     (CATEGORY_EMOJI as Record<string, string>)[id] ??
     (PACK_EMOJI as Record<string, string>)[id] ??
     (WWI_PACK_EMOJI as Record<string, string>)[id] ??
+    (BLITZ_EMOJI as Record<string, string>)[id] ??
     "🎲"
   );
 }

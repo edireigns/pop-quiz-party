@@ -38,6 +38,10 @@ import {
   type RoundMode,
   type BuiltInPackId,
   type BuiltInWwiPackId,
+  type BuiltInBlitzCategoryId,
+  type BlitzCategoryId,
+  BLITZ_CATEGORY_IDS,
+  BLITZ_TIMER_OPTIONS,
   ANSWERS_SHOWN_OPTIONS,
   GUESS_TIMER_OPTIONS,
   WRITE_TIMER_OPTIONS,
@@ -68,6 +72,7 @@ export const BUILTIN_CATEGORIES: BuiltInCategoryId[] = ["tv", "genz", "movies", 
 
 export const BUILTIN_PACKS: BuiltInPackId[] = ["college", "friends", "chaos", "future", "habits"];
 export const BUILTIN_WWI_PACKS: BuiltInWwiPackId[] = ["hypotheticals", "college", "friends", "chaos", "habits"];
+export const BUILTIN_BLITZ_CATEGORIES: BuiltInBlitzCategoryId[] = ["tv", "movies", "music", "food", "memes", "college", "places", "animals"];
 export const DEFAULT_MIXED_MODES: RoundMode[] = ["hangman", "emoji"];
 export const MLT_SUDDEN_DEATH_QUESTION = "Who deserves the crown tonight?";
 
@@ -80,6 +85,8 @@ export const DEFAULT_SETTINGS: Settings = {
   guessSec: 15,
   answersShown: 3,
   wwiPacks: [...BUILTIN_WWI_PACKS],
+  blitzSec: 30,
+  blitzCategories: [...BUILTIN_BLITZ_CATEGORIES],
   rounds: 10,
   timerSec: 60,
   categories: [...BUILTIN_CATEGORIES],
@@ -226,6 +233,10 @@ export function upgradeState(s: GameState): GameState {
   if (!any.wwiShownCount || typeof any.wwiShownCount !== "object") s.wwiShownCount = {};
   if (!Array.isArray(any.wwiWriters)) s.wwiWriters = [];
   if (any.holdMin === undefined) s.holdMin = null;
+  if (!(s.settings as Partial<Settings>).blitzSec) s.settings.blitzSec = 30;
+  if (!Array.isArray((s.settings as Partial<Settings>).blitzCategories)) s.settings.blitzCategories = [...BUILTIN_BLITZ_CATEGORIES];
+  if (!Array.isArray(any.customBlitz)) s.customBlitz = [];
+  if (!Array.isArray(any.usedBlitz)) s.usedBlitz = [];
   if (!Array.isArray(any.customQuestions)) s.customQuestions = [];
   if (!Array.isArray(any.questionSubs)) s.questionSubs = [];
   if (!Array.isArray(any.usedQuestions)) s.usedQuestions = [];
@@ -274,6 +285,7 @@ export function createGame(opts: { roomId: string; code: string; now: number; se
       mixedModes: [...DEFAULT_SETTINGS.mixedModes],
       packs: [...DEFAULT_SETTINGS.packs],
       wwiPacks: [...DEFAULT_SETTINGS.wwiPacks],
+      blitzCategories: [...DEFAULT_SETTINGS.blitzCategories],
       categories: [...DEFAULT_SETTINGS.categories],
       ...opts.settings,
     },
@@ -303,6 +315,8 @@ export function createGame(opts: { roomId: string; code: string; now: number; se
     wwiRoundPlan: [],
     wwiShownCount: {},
     wwiWriters: [],
+    customBlitz: [],
+    usedBlitz: [],
     nextCategory: null,
     loserPick: null,
     dare: null,
@@ -325,7 +339,7 @@ export function updateSettings(s: GameState, patch: Partial<Settings>) {
   const next: Settings = { ...s.settings };
   if (patch.mode !== undefined) {
     if (!GAME_MODES.includes(patch.mode as GameMode))
-      throw new GameError("bad_settings", "Game mode must be Hangman, Emoji Decode, Most Likely To, Who Wrote It? or Mixed.");
+      throw new GameError("bad_settings", "Game mode must be Hangman, Emoji Decode, Most Likely To, Who Wrote It?, Category Blitz or Mixed.");
     next.mode = patch.mode;
   }
   if (patch.mixedModes !== undefined) {
@@ -361,6 +375,16 @@ export function updateSettings(s: GameState, patch: Partial<Settings>) {
     const packs = [...new Set(patch.wwiPacks)].filter((p): p is WwiPackId => WWI_PACK_IDS.includes(p as WwiPackId));
     if (packs.length === 0) throw new GameError("bad_settings", "Pick at least one Who Wrote It? question pack.");
     next.wwiPacks = packs;
+  }
+  if (patch.blitzSec !== undefined) {
+    if (!BLITZ_TIMER_OPTIONS.includes(patch.blitzSec)) throw new GameError("bad_settings", "Category Blitz timer must be 30, 45 or 60 seconds.");
+    next.blitzSec = patch.blitzSec;
+  }
+  if (patch.blitzCategories !== undefined) {
+    if (!Array.isArray(patch.blitzCategories)) throw new GameError("bad_settings", "Pick at least one Category Blitz category.");
+    const cats = [...new Set(patch.blitzCategories)].filter((c): c is BlitzCategoryId => BLITZ_CATEGORY_IDS.includes(c as BlitzCategoryId));
+    if (cats.length === 0) throw new GameError("bad_settings", "Pick at least one Category Blitz category.");
+    next.blitzCategories = cats;
   }
   if (patch.rounds !== undefined) {
     if (!ROUND_OPTIONS.includes(patch.rounds)) throw new GameError("bad_settings", "Rounds must be 5, 10, 15 or 20.");
@@ -722,7 +746,7 @@ export function availablePacks(s: GameState): PackId[] {
 }
 
 /** Loser Picks options for a round of this mode. */
-export function availableChoices(s: GameState, mode: RoundMode): (CategoryId | PackId | WwiPackId)[] {
+export function availableChoices(s: GameState, mode: RoundMode): (CategoryId | PackId | WwiPackId | BlitzCategoryId)[] {
   return mode === "mlt" ? availablePacks(s) : mode === "wwi" ? availableWwiPacks(s) : availableCategories(s, mode);
 }
 
@@ -824,7 +848,7 @@ function newProgress(lives: number): PlayerProgress {
   };
 }
 
-export function startRound(s: GameState, ctx: Ctx, choice?: CategoryId | PackId | WwiPackId | null) {
+export function startRound(s: GameState, ctx: Ctx, choice?: CategoryId | PackId | WwiPackId | BlitzCategoryId | null) {
   const n = s.roundsPlayed + 1;
   const kind = n >= s.settings.rounds ? "final" : "normal";
   const mode = roundModeFor(s, n);
@@ -1571,7 +1595,7 @@ function proceedToNextRound(s: GameState, ctx: Ctx) {
   startRound(s, ctx);
 }
 
-export function resolveLoserPick(s: GameState, category: CategoryId | PackId | WwiPackId | null, ctx: Ctx) {
+export function resolveLoserPick(s: GameState, category: CategoryId | PackId | WwiPackId | BlitzCategoryId | null, ctx: Ctx) {
   assertPhase(s, "loserPick");
   const lp = s.loserPick!;
   const cat = category ?? pick(lp.options, ctx.random);
@@ -1583,7 +1607,7 @@ export function pickCategory(s: GameState, playerId: string, category: unknown, 
   const lp = s.loserPick!;
   if (lp.playerId !== playerId) throw new GameError("not_picker", "It's not your pick.", 403);
   if (!lp.options.includes(category as CategoryId)) throw new GameError("bad_category", "Pick one of the listed options.");
-  resolveLoserPick(s, category as CategoryId | PackId | WwiPackId, ctx);
+  resolveLoserPick(s, category as CategoryId | PackId | WwiPackId | BlitzCategoryId, ctx);
 }
 
 // ---------------------------------------------------------------------------

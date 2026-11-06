@@ -10,6 +10,8 @@ export function roundSeconds(s: Settings, mode: RoundMode): number {
       return s.timerSec + 20; // play + reveal
     case "mlt":
       return (s.voteSec ?? 20) + 20; // vote + suspense reveal
+    case "blitz":
+      return (s.blitzSec ?? 30) + 20 + 15; // answering + host review + reveal
     case "wwi":
       return (
         (s.writeSec ?? 45) +
