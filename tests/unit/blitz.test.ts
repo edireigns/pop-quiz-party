@@ -453,6 +453,8 @@ describe("Loser Picks, Dare Wheel, Sudden Death, removal and awards", () => {
     expect(score(h, 1)).toBe(200); // no points in Sudden Death
     next(h.s, h.ctx());
     expect(h.s.phase).toBe("ended");
+    // A Blitz answer isn't a solved word: no Speed Demon from Sudden Death.
+    expect(computeAwards(h.s).map((x) => x.key)).not.toContain("speedDemon");
   });
 
   it("an invalid answer eliminates; if everyone is out, another prompt", () => {

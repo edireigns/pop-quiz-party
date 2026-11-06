@@ -59,3 +59,8 @@ export async function newPhone(browser: Browser) {
   const ctx = await browser.newContext({ viewport: { width: 390, height: 844 }, hasTouch: true, isMobile: true });
   return ctx.newPage();
 }
+
+/** Make the current round's timer run out now (keeps long e2e games fast). */
+export async function expireRound(code: string) {
+  await conn()`update rooms set state = jsonb_set(state, '{round,deadline}', to_jsonb(${Date.now() - 1}::bigint)) where code = ${code}`;
+}

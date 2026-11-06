@@ -1463,7 +1463,7 @@ export function endRound(s: GameState, ctx: Ctx, reason: NonNullable<Round["endR
     if (pr.hintUsed) p.stats.hints += 1;
     p.stats.livesLost += pr.wrong.length;
     if (pr.status === "solved" && r.mode === "emoji" && r.kind !== "suddenDeath") p.stats.emojiSolves += 1;
-    if (pr.status === "solved" && pr.solveMs != null) {
+    if (pr.status === "solved" && pr.solveMs != null && r.mode !== "blitz") {
       p.stats.solves += 1;
       p.stats.bestSolveMs = p.stats.bestSolveMs == null ? pr.solveMs : Math.min(p.stats.bestSolveMs, pr.solveMs);
     }
