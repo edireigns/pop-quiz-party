@@ -10,6 +10,7 @@ import { useRoom, useTicker, type ApiError } from "@/lib/client/useRoom";
 import type { PlayerView } from "@/lib/game/views";
 import { Celebrate, Reactions } from "./shared";
 import { hasWwiMode, PromptSubmit, WwiRevealScreen, WwiRound } from "./WwiScreens";
+import { BlitzRevealScreen, BlitzRound } from "./BlitzScreens";
 
 export { Reactions };
 
@@ -115,6 +116,8 @@ function Lobby({ view, act }: { view: PlayerView; act: (b: Record<string, unknow
               ? "👑 Tonight: Most Likely To"
               : view.mode === "wwi"
                 ? "🕵️ Tonight: Who Wrote It?"
+                : view.mode === "blitz"
+                  ? "⚡ Tonight: Category Blitz"
                 : view.mode === "mixed"
                 ? `🔀 Tonight: ${view.mixedModes.map((m) => MODE_SHORT[m]).join(" + ")}`
                 : "🔤 Tonight: Hangman"}
@@ -207,6 +210,7 @@ function RoundScreen({ view, room, act }: { view: PlayerView; room: Room; act: (
   );
 
   if (r.mode === "wwi") return <WwiRound view={view} room={room} act={act} header={header} />;
+  if (r.mode === "blitz") return <BlitzRound view={view} room={room} act={act} />;
   if (r.mode === "mlt") return <MltRound view={view} room={room} act={act} header={header} />;
   if (my.state === "playing" && r.mode === "emoji") return <EmojiPlaying view={view} room={room} act={act} header={header} />;
   if (my.state === "playing") return <Playing view={view} room={room} act={act} header={header} />;
@@ -904,6 +908,7 @@ function RevealScreen({ view, act }: { view: PlayerView; act: (b: Record<string,
   const iWon = sd && rv.sdWinnerId === view.me.id;
   if (rv.mode === "mlt") return <MltResult view={view} act={act} />;
   if (rv.mode === "wwi") return <WwiRevealScreen view={view} act={act} />;
+  if (rv.mode === "blitz") return <BlitzRevealScreen view={view} act={act} />;
   return (
     <>
       <Panel className="flex flex-col items-center gap-3 text-center">

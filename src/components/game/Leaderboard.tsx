@@ -121,7 +121,11 @@ export function TvLeaderboard({
                   <span className="font-bold text-lime">🗳️ voted</span>
                 ) : mode === "mlt" ? (
                   <span className="text-mute">voting…</span>
-                ) : mode === "wwi" ? null : mode === "emoji" ? (
+                ) : mode === "wwi" ? null : mode === "blitz" ? (
+                  <span className="font-bold text-cyan tabular-nums" aria-label={`${r.count ?? 0} answers added`}>
+                    📝 {r.count ?? 0}
+                  </span>
+                ) : mode === "emoji" ? (
                   <>
                     <AttemptPips left={r.lives} />
                     <span className="w-[5.5em] text-mute">answering…</span>

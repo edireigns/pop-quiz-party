@@ -97,7 +97,7 @@ export function HostControls({ code }: { code: string }) {
               ))}
             </ul>
           )}
-          {view.phase === "round" && (r?.mode === "mlt" || r?.mode === "wwi") && r.question && (
+          {view.phase === "round" && (r?.mode === "mlt" || r?.mode === "wwi" || r?.mode === "blitz") && r.question && (
             <p className="font-display text-lg font-bold">{r.question}</p>
           )}
           {view.phase === "round" && r && <Timer timer={r.timer} serverNow={host.serverNow} />}
@@ -107,6 +107,7 @@ export function HostControls({ code }: { code: string }) {
             </p>
           )}
           {view.phase === "round" && r?.wwi && <WwiHostPanel view={view} run={run} />}
+          {view.phase === "round" && r?.blitz && <BlitzHostPanel view={view} run={run} />}
           {view.progress && r?.mode !== "mlt" && (
             <p className="text-sm">
               <span className="text-lime">✓ {view.progress.solved} solved</span> · <span className="text-red">💥 {view.progress.out} out</span> ·{" "}
@@ -142,7 +143,7 @@ export function HostControls({ code }: { code: string }) {
               <Segmented
                 label="Game mode"
                 value={view.settings.mode ?? "hangman"}
-                options={(["hangman", "emoji", "mlt", "wwi", "mixed"] as const).map((m) => ({ value: m, label: MODE_LABEL[m] }))}
+                options={(["hangman", "emoji", "mlt", "wwi", "blitz", "mixed"] as const).map((m) => ({ value: m, label: MODE_LABEL[m] }))}
                 onChange={(m) => void run({ action: "updateSettings", settings: { mode: m } })}
               />
             </div>
@@ -191,10 +192,12 @@ export function HostControls({ code }: { code: string }) {
                   ? "Skip this question? Votes are discarded and nobody gets points."
                   : r?.mode === "wwi"
                     ? "Skip the rest of this question? Answers not yet revealed are discarded and earn no points."
-                    : "Skip this word? Nobody gets points for it.",
+                    : r?.mode === "blitz"
+                      ? "Skip this prompt? Everyone's answers are discarded and nobody gets points."
+                      : "Skip this word? Nobody gets points for it.",
               )}
             >
-              ⏭ {r?.mode === "mlt" || r?.mode === "wwi" ? "Skip question" : "Skip word"}
+              ⏭ {r?.mode === "mlt" || r?.mode === "wwi" ? "Skip question" : r?.mode === "blitz" ? "Skip prompt" : "Skip word"}
             </Button>
           )}
           {view.phase === "round" && r?.mode === "emoji" && (
@@ -263,6 +266,8 @@ export function HostControls({ code }: { code: string }) {
                                   ? "voting…"
                                   : r?.mode === "wwi"
                                     ? ""
+                                    : r?.mode === "blitz"
+                                      ? `📝 ${rival.count ?? 0}`
                                     : r?.mode === "emoji"
                                 ? `🎯×${rival.lives}`
                                 : `${rival.pct}%`}
@@ -353,6 +358,55 @@ function WwiHostPanel({ view, run }: { view: HostView; run: (body: Record<string
           </ul>
         </>
       )}
+    </div>
+  );
+}
+
+/** Category Blitz on the host's phone: answer counts while playing, then the review of unrecognized answers. */
+function BlitzHostPanel({ view, run }: { view: HostView; run: (body: Record<string, unknown>) => Promise<unknown> }) {
+  const b = view.round!.blitz!;
+  const total = view.rivals.reduce((n, x) => n + (x.count ?? 0), 0);
+  if (b.stage === "play")
+    return (
+      <p className="rounded-2xl bg-stage p-3">
+        ⚡ <strong>{b.category}</strong> starting with <strong className="text-yellow">{b.letter}</strong> · 📝 {total} answers so far
+        {b.extraTime && <span className="text-orange"> · ⏱ extra time running</span>}
+      </p>
+    );
+  return (
+    <div className="flex flex-col gap-2 rounded-2xl bg-stage p-3">
+      <h3 className="font-bold">🧐 Review these answers — anything left unreviewed earns no points</h3>
+      <p className="text-sm text-mute">Only you see these. They&apos;re the most common answers the game didn&apos;t recognize.</p>
+      <ul className="flex flex-col gap-1">
+        {view.blitzReview.map((x) => (
+          <li key={x.id} className="flex items-center justify-between gap-2 rounded-xl bg-panel px-3 py-1">
+            <span className="min-w-0 break-words">
+              {x.text} <span className="text-sm text-mute">×{x.count}</span>
+            </span>
+            <span className="flex shrink-0 gap-1">
+              <button
+                className={`min-h-11 rounded-full px-3 text-sm font-bold ${x.verdict === "ok" ? "bg-lime text-stage" : "text-lime"}`}
+                aria-pressed={x.verdict === "ok"}
+                aria-label={`Approve ${x.text}`}
+                onClick={() => void run({ action: "reviewAnswer", id: x.id, verdict: x.verdict === "ok" ? null : "ok" })}
+              >
+                ✓
+              </button>
+              <button
+                className={`min-h-11 rounded-full px-3 text-sm font-bold ${x.verdict === "no" ? "bg-red text-stage" : "text-red"}`}
+                aria-pressed={x.verdict === "no"}
+                aria-label={`Reject ${x.text}`}
+                onClick={() => void run({ action: "reviewAnswer", id: x.id, verdict: x.verdict === "no" ? null : "no" })}
+              >
+                ✕
+              </button>
+            </span>
+          </li>
+        ))}
+      </ul>
+      <Button variant="lime" onClick={() => void run({ action: "finishReview" })}>
+        ✓ Done reviewing — show results
+      </Button>
     </div>
   );
 }

@@ -7,9 +7,9 @@ import { QrCode } from "@/components/QrCode";
 import { Segmented, Toggle } from "@/components/Segmented";
 import { useHost } from "@/components/host/useHost";
 import { Button, ConnectionBanner, Logo, Panel, RoomGate, Stage, Toast } from "@/components/ui";
-import { CATEGORY_EMOJI, CATEGORY_LABELS, PACK_EMOJI, PACK_LABELS, WWI_PACK_EMOJI, WWI_PACK_LABELS } from "@/data/categories";
+import { BLITZ_EMOJI, BLITZ_LABELS, CATEGORY_EMOJI, CATEGORY_LABELS, PACK_EMOJI, PACK_LABELS, WWI_PACK_EMOJI, WWI_PACK_LABELS } from "@/data/categories";
 import { siteUrl } from "@/lib/client/storage";
-import type { CategoryId, PackId, RoundMode, Settings, WwiPackId } from "@/lib/game/types";
+import type { BlitzCategoryId, CategoryId, PackId, RoundMode, Settings, WwiPackId } from "@/lib/game/types";
 
 const ALL_CATS: CategoryId[] = ["tv", "genz", "movies", "music", "memes", "food", "college", "mixed", "inside"];
 
@@ -57,6 +57,7 @@ export default function HostPrep() {
   const [clueForm, setClueForm] = useState({ clue: "", answer: "", alternates: "" });
   const [questionText, setQuestionText] = useState("");
   const [promptText, setPromptText] = useState("");
+  const [blitzForm, setBlitzForm] = useState({ category: "", letter: "", answers: "" });
   const [dare, setDare] = useState("");
 
   if (token === null)
@@ -74,6 +75,7 @@ export default function HostPrep() {
   const hasEmoji = inMix("emoji");
   const hasMlt = inMix("mlt");
   const hasWwi = inMix("wwi");
+  const hasBlitz = inMix("blitz");
   const hasWords = hasHangman || hasEmoji;
   const toggleMixed = (m: RoundMode) => {
     const next = mixedModes.includes(m) ? mixedModes.filter((x) => x !== m) : [...mixedModes, m];
@@ -88,6 +90,11 @@ export default function HostPrep() {
     const packs = s.wwiPacks ?? [];
     const next = packs.includes(p) ? packs.filter((x) => x !== p) : [...packs, p];
     if (next.length) void set({ wwiPacks: next });
+  };
+  const toggleBlitzCat = (c: BlitzCategoryId) => {
+    const cats = s.blitzCategories ?? [];
+    const next = cats.includes(c) ? cats.filter((x) => x !== c) : [...cats, c];
+    if (next.length) void set({ blitzCategories: next });
   };
   const base = siteUrl();
   const joinUrl = `${base}/play/${view.code}`;
@@ -156,6 +163,7 @@ export default function HostPrep() {
                 { value: "emoji", label: "😀 Emoji Decode" },
                 { value: "mlt", label: "👑 Most Likely To" },
                 { value: "wwi", label: "🕵️ Who Wrote It?" },
+                { value: "blitz", label: "⚡ Category Blitz" },
                 { value: "mixed", label: "🔀 Mixed" },
               ]}
               onChange={(v) => set({ mode: v })}
@@ -164,6 +172,8 @@ export default function HostPrep() {
               {mode === "hangman" && "Classic: solve the word letter by letter before your 6 balloons pop."}
               {mode === "emoji" && "The TV shows an emoji clue — type the answer on your phone. 3 attempts per round."}
               {mode === "mlt" && "The TV asks “Who is most likely to…?” — everyone votes on their phone. Needs at least 3 players."}
+              {mode === "blitz" &&
+                "The TV shows a category and a letter — everyone types as many answers as they can. Unique answers score extra."}
               {mode === "wwi" &&
                 "Everyone writes an anonymous answer to a question, then guesses who wrote each answer shown on the TV. Needs at least 4 players."}
               {mode === "mixed" && "Rotates through the modes you pick, one per round, in order. One shared leaderboard."}
@@ -178,6 +188,7 @@ export default function HostPrep() {
                       ["emoji", "😀 Emoji Decode"],
                       ["mlt", "👑 Most Likely To"],
                       ["wwi", "🕵️ Who Wrote It?"],
+                      ["blitz", "⚡ Category Blitz"],
                     ] as const
                   ).map(([m, label]) => {
                     const on = mixedModes.includes(m);
@@ -281,6 +292,40 @@ export default function HostPrep() {
               </fieldset>
             </>
           )}
+          {hasBlitz && (
+            <>
+              <Segmented
+                label="Round timer (Category Blitz)"
+                value={s.blitzSec ?? 30}
+                disabled={locked}
+                options={[30, 45, 60].map((n) => ({ value: n as Settings["blitzSec"], label: `${n}s` }))}
+                onChange={(v) => set({ blitzSec: v })}
+              />
+              <fieldset disabled={locked}>
+                <legend className="mb-2 font-bold">Category Blitz categories</legend>
+                <div className="flex flex-wrap gap-2">
+                  {(["tv", "movies", "music", "food", "memes", "college", "places", "animals", "hostPrompts"] as BlitzCategoryId[])
+                    .filter((c) => c !== "hostPrompts" || (view.customBlitzCount ?? 0) > 0)
+                    .map((c) => {
+                      const on = (s.blitzCategories ?? []).includes(c);
+                      return (
+                        <button
+                          key={c}
+                          type="button"
+                          aria-pressed={on}
+                          onClick={() => toggleBlitzCat(c)}
+                          className={`min-h-12 rounded-xl border-2 px-3 font-bold transition ${
+                            on ? "border-orange bg-orange text-stage" : "border-line bg-stage text-ink hover:border-violet"
+                          }`}
+                        >
+                          <span aria-hidden>{BLITZ_EMOJI[c]}</span> {BLITZ_LABELS[c]}
+                        </button>
+                      );
+                    })}
+                </div>
+              </fieldset>
+            </>
+          )}
           {hasMlt && (
             <fieldset disabled={locked}>
               <legend className="mb-2 font-bold">{hasWwi ? "Most Likely To question packs" : "Question packs"}</legend>
@@ -349,7 +394,7 @@ export default function HostPrep() {
             ]}
             onChange={(v) => set({ content: v })}
           />
-          <Toggle
+          {(hasWords || hasMlt || hasWwi) && <Toggle
             label={(hasMlt || hasWwi) && !hasWords ? "Friend-written questions" : "Friend-written words"}
             description={[
               hasHangman && !hasEmoji ? "Each player can submit one word in the lobby." : "",
@@ -363,7 +408,7 @@ export default function HostPrep() {
             checked={s.friendWords}
             disabled={locked}
             onChange={(v) => set({ friendWords: v })}
-          />
+          />}
           <Toggle
             label="Dare Wheel"
             description="The player in last place spins a (safe, optional) dare wheel."
@@ -551,6 +596,85 @@ export default function HostPrep() {
                       <li key={q.id} className="flex items-center justify-between gap-2 rounded-xl bg-stage px-3 py-2">
                         <span className="min-w-0 break-words">{q.text}</span>
                         <Button variant="ghost" aria-label={`Remove question ${q.text}`} onClick={() => run({ action: "removeCustomQuestion", id: q.id })}>
+                          ✕
+                        </Button>
+                      </li>
+                    ))}
+                  </ul>
+                )}
+              </>
+            )}
+          </Panel>
+        )}
+
+        {hasBlitz && (
+          <Panel className="flex flex-col gap-3">
+            <h2 className="font-display text-xl font-bold">
+              <span aria-hidden>⚡</span> Your Category Blitz prompts <span className="text-base font-normal text-mute">(optional)</span>
+            </h2>
+            <p className="text-sm text-mute">
+              A category and a letter, e.g. “Things in a fridge” + M. Accepted answers are optional (comma-separated, alternates with
+              “/”). Without them, the most common answers come to you to approve after each round.
+            </p>
+            {view.customBlitz === null ? (
+              <p className="text-mute">{view.customBlitzCount} custom prompts are locked in for this game.</p>
+            ) : (
+              <>
+                <form
+                  className="grid gap-2 sm:grid-cols-[1fr_5rem]"
+                  onSubmit={async (e) => {
+                    e.preventDefault();
+                    if (await run({ action: "addCustomBlitz", ...blitzForm }, "Prompt added")) setBlitzForm({ category: "", letter: "", answers: "" });
+                  }}
+                >
+                  <label className="flex flex-col gap-1 text-sm font-bold" htmlFor="cb-cat">
+                    Category
+                    <input
+                      id="cb-cat"
+                      value={blitzForm.category}
+                      maxLength={40}
+                      onChange={(e) => setBlitzForm({ ...blitzForm, category: e.target.value })}
+                      placeholder="Things in a fridge"
+                      className="min-h-12 rounded-xl border-2 border-line bg-stage px-3 font-normal"
+                    />
+                  </label>
+                  <label className="flex flex-col gap-1 text-sm font-bold" htmlFor="cb-letter">
+                    Letter
+                    <input
+                      id="cb-letter"
+                      value={blitzForm.letter}
+                      maxLength={1}
+                      onChange={(e) => setBlitzForm({ ...blitzForm, letter: e.target.value.toUpperCase() })}
+                      placeholder="M"
+                      className="min-h-12 rounded-xl border-2 border-line bg-stage px-3 text-center text-xl font-normal uppercase"
+                    />
+                  </label>
+                  <label className="flex flex-col gap-1 text-sm font-bold sm:col-span-2" htmlFor="cb-answers">
+                    Accepted answers (optional)
+                    <input
+                      id="cb-answers"
+                      value={blitzForm.answers}
+                      maxLength={2000}
+                      onChange={(e) => setBlitzForm({ ...blitzForm, answers: e.target.value })}
+                      placeholder="Milk, Mayonnaise / Mayo, Mustard"
+                      className="min-h-12 rounded-xl border-2 border-line bg-stage px-3 font-normal"
+                    />
+                  </label>
+                  <Button type="submit" className="sm:col-span-2" disabled={blitzForm.category.trim().length < 2 || !/^[A-Za-z]$/.test(blitzForm.letter)}>
+                    Add prompt
+                  </Button>
+                </form>
+                {view.customBlitz.length > 0 && (
+                  <ul className="flex flex-col gap-2">
+                    {view.customBlitz.map((q) => (
+                      <li key={q.id} className="flex items-center justify-between gap-2 rounded-xl bg-stage px-3 py-2">
+                        <span className="min-w-0 break-words">
+                          <strong>{q.category}</strong> starting with <strong className="text-yellow">{q.letter}</strong>
+                          <span className="block text-sm text-mute">
+                            {q.answerCount ? `${q.answerCount} accepted answers` : "No answer list — you'll review answers"}
+                          </span>
+                        </span>
+                        <Button variant="ghost" aria-label={`Remove prompt ${q.category} ${q.letter}`} onClick={() => run({ action: "removeCustomBlitz", id: q.id })}>
                           ✕
                         </Button>
                       </li>

@@ -12,6 +12,7 @@ import type { TvView } from "@/lib/game/views";
 import { DareWheel } from "./DareWheel";
 import { MltQuestion, MltReveal } from "./MltStage";
 import { WwiTv } from "./WwiStage";
+import { BlitzTv } from "./BlitzStage";
 import { Podium } from "./Podium";
 import { FloatingReactions } from "./FloatingReactions";
 import { useTvSound, MuteButton } from "./sound";
@@ -203,6 +204,7 @@ function RoundStage({ view, room }: { view: TvView; room: Room }) {
           {r.mode === "emoji" && <EmojiClue view={view} revealing={revealing} />}
           {r.mode === "mlt" && (revealing && view.reveal ? <MltReveal view={view} /> : <MltQuestion view={view} />)}
           {r.mode === "wwi" && r.wwi && <WwiTv view={view} />}
+          {r.mode === "blitz" && r.blitz && <BlitzTv view={view} />}
           {revealing && rv && (
             <div className="animate-pop-in text-center text-ink">
               {rv.skipped && <p className="text-[2vw] font-bold text-orange">Skipped — no points this round</p>}
@@ -212,11 +214,18 @@ function RoundStage({ view, room }: { view: TvView; room: Room }) {
                   {rv.authorBonus > 0 && <span className="text-lime"> · +{rv.authorBonus} for stumping {rv.stumpedCount}!</span>}
                 </p>
               )}
-              {sd && <p className="font-display text-[2.6vw] font-black text-yellow">{winner ? `🏆 ${winner} wins Sudden Death!` : "Everyone's out — another word!"}</p>}
+              {sd && (
+                <p className="font-display text-[2.6vw] font-black text-yellow">
+                  {winner ? `🏆 ${winner} wins Sudden Death!` : r.mode === "blitz" ? "Everyone's out — another prompt!" : "Everyone's out — another word!"}
+                </p>
+              )}
             </div>
           )}
           {!revealing && sd && view.suddenDeath && (
-            <p className="text-[1.8vw] text-ink">One wrong guess and you&apos;re out · first to solve wins · {view.suddenDeath.names.join(" vs ")}</p>
+            <p className="text-[1.8vw] text-ink">
+              {r.mode === "blitz" ? "First valid answer wins · a wrong one and you're out" : "One wrong guess and you're out · first to solve wins"} ·{" "}
+              {view.suddenDeath.names.join(" vs ")}
+            </p>
           )}
         </div>
         {revealing && <p className="text-center text-[1.5vw] text-mute">Waiting for the host to continue…</p>}
@@ -232,6 +241,8 @@ function RoundStage({ view, room }: { view: TvView; room: Room }) {
                   ? "who has voted"
                   : r.mode === "wwi"
                     ? "scores update at each reveal"
+                    : r.mode === "blitz"
+                      ? "answers added (never shown)"
                     : "balloons · % solved"}
             </span>
           )}
